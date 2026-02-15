@@ -98,19 +98,25 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
     if not repo_url.strip():
         return "❌ Error: Repository URL is required"
 
+    # Orchestrator composes a single narrative from specialist agents.
     results: list[str] = []
     results.extend(["=" * 70, "👤 AGENT 1: REPOSITORY AGENT", "=" * 70])
+
+    logger.info("Orchestration: starting repository agent")
     clone_result = await clone_repository(repo_url=repo_url, branch=branch)
     results.append(clone_result)
     if "❌" in clone_result:
+        logger.warning("Orchestration halted after repository stage")
         return "\n".join(results)
 
     repo_path = clone_result.split(": ", 1)[1] if ": " in clone_result else ""
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 2: INSPECTOR/ANALYZER AGENT", "=" * 70])
+    logger.info("Orchestration: starting analyzer agent")
     results.append(await analyze_codebase(repo_path=repo_path, file_pattern="*.py"))
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 3: TEST GENERATOR AGENT", "=" * 70])
+    logger.info("Orchestration: starting generator agent")
     generated_count = 0
     for target in ["backend/main.py", "database/database_setup.py", "prestart.py", "frontend/src/App.tsx"]:
         gen_result = await generate_unit_tests(repo_path=repo_path, target_file=target)
@@ -125,23 +131,27 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
         generated_count += 1
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 4: EXECUTOR AGENT", "=" * 70])
+    logger.info("Orchestration: starting executor agent")
     exec_result = await execute_tests(repo_path=repo_path)
     results.append(exec_result)
 
     if "failed" in exec_result.lower() or "❌" in exec_result:
         results.extend(["\n" + "=" * 70, "👤 AGENT 5: REPAIRER AGENT", "=" * 70])
+        logger.info("Orchestration: starting repair agent due to failures")
         results.append(await repair_failing_tests(repo_path=repo_path, test_output=exec_result))
     else:
         results.append("\n⏭️  Agent 5 (Repairer) skipped - no failures detected")
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 6: CI/CD AGENT", "=" * 70])
+    logger.info("Orchestration: starting CI/CD agent")
     results.append(await generate_github_workflow(repo_path=repo_path, test_command="pytest --cov=backend --cov-report=xml -v"))
 
-    results.extend([
-        "\n" + "=" * 70,
-        "✅ COUNCIL OF AGENTS - COMPLETE",
-        "=" * 70,
-        f"""
+    results.extend(
+        [
+            "\n" + "=" * 70,
+            "✅ COUNCIL OF AGENTS - COMPLETE",
+            "=" * 70,
+            f"""
 📊 Execution Summary:
   ✅ Repository Agent - Code cloned to {repo_path}
   ✅ Inspector Agent - Codebase analyzed
@@ -150,8 +160,10 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
   {"✅ Repairer Agent - Failures analyzed" if "failed" in exec_result.lower() else "⏭️  Repairer Agent - Skipped (no failures)"}
   ✅ CI/CD Agent - GitHub Actions workflow generated
 """,
-    ])
+        ]
+    )
 
+    logger.info("Orchestration complete for repo_path=%s", repo_path)
     return "\n".join(results)
 
 

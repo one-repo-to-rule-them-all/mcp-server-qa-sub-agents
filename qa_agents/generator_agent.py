@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .common import analyze_python_file, verify_path_exists
+
+logger = logging.getLogger("qa-council-server.generator-agent")
 
 REACT_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
 
@@ -76,9 +79,13 @@ class Test{class_name}:
 
 
 def _generate_python_unit_tests(verified_path: str, target_file: str) -> str:
+    """Generate Python unit-test scaffolds based on AST discovery."""
     file_path = Path(verified_path) / target_file
+    logger.info("Generating Python unit tests for %s", file_path)
+
     analysis = analyze_python_file(str(file_path))
     if "error" in analysis:
+        logger.error("Python analysis failed for %s: %s", file_path, analysis["error"])
         return f"❌ Error analyzing file: {analysis['error']}"
 
     test_file_path = Path(verified_path) / "tests" / "unit" / f"test_{file_path.name}"
@@ -103,6 +110,8 @@ import {module_import_path} as module_under_test
         test_content += _render_function_test(func)
 
     test_file_path.write_text(test_content, encoding="utf-8")
+    logger.info("Generated Python unit test file: %s", test_file_path)
+
     return f"""✅ Unit tests generated successfully
 
 📝 Test file: {test_file_path}
@@ -113,7 +122,10 @@ import {module_import_path} as module_under_test
 
 
 def _generate_react_unit_tests(verified_path: str, target_file: str) -> str:
+    """Generate React component unit-test scaffolds for RTL + Vitest."""
     source_path = Path(verified_path) / target_file
+    logger.info("Generating React unit tests for %s", source_path)
+
     stem = source_path.stem
     test_file_path = Path(verified_path) / "tests" / "unit" / f"{stem}.test.tsx"
     test_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +171,8 @@ describe("{stem} component", () => {{
 '''
 
     test_file_path.write_text(test_content, encoding="utf-8")
+    logger.info("Generated React unit test file: %s", test_file_path)
+
     return f"""✅ React unit tests generated successfully
 
 📝 Test file: {test_file_path}
@@ -169,17 +183,24 @@ describe("{stem} component", () => {{
 
 async def generate_unit_tests(repo_path: str, target_file: str) -> str:
     """Generate unit tests that follow QA best practices for Python and React."""
+    logger.info("Starting unit test generation: repo_path=%s target_file=%s", repo_path, target_file)
+
     if not repo_path.strip():
+        logger.warning("Unit test generation aborted: repository path was empty")
         return "❌ Error: Repository path is required"
     if not target_file.strip():
+        logger.warning("Unit test generation aborted: target file was empty")
         return "❌ Error: Target file path is required"
 
+    # Validate target path once to keep downstream generators simple.
     path_exists, verified_path = verify_path_exists(repo_path)
     if not path_exists:
+        logger.warning("Unit test generation aborted: invalid repository path (%s)", verified_path)
         return f"❌ Error: Repository path issue - {verified_path}"
 
     file_path = Path(verified_path) / target_file
     if not file_path.exists():
+        logger.warning("Unit test generation aborted: file not found (%s)", file_path)
         return f"❌ Error: File not found: {target_file}"
 
     if file_path.suffix in REACT_EXTENSIONS and "frontend" in file_path.parts:
@@ -187,18 +208,24 @@ async def generate_unit_tests(repo_path: str, target_file: str) -> str:
     if file_path.suffix == ".py":
         return _generate_python_unit_tests(verified_path, target_file)
 
+    logger.info("Unsupported unit test target skipped: %s", target_file)
     return f"⚠️ Unsupported file type for unit test generation: {target_file}"
 
 
 async def generate_e2e_tests(repo_path: str, base_url: str, test_name: str = "app") -> str:
     """Generate Playwright E2E tests for web applications."""
+    logger.info("Starting E2E generation: repo_path=%s base_url=%s test_name=%s", repo_path, base_url, test_name)
+
     if not repo_path.strip():
+        logger.warning("E2E generation aborted: repository path was empty")
         return "❌ Error: Repository path is required"
     if not base_url.strip():
+        logger.warning("E2E generation aborted: base URL was empty")
         return "❌ Error: Base URL is required"
 
     path_exists, verified_path = verify_path_exists(repo_path)
     if not path_exists:
+        logger.warning("E2E generation aborted: invalid repository path (%s)", verified_path)
         return f"❌ Error: {verified_path}"
 
     repo = Path(verified_path)
@@ -218,5 +245,6 @@ def test_{test_name}_page_loads(page: Page, base_url: str):
 
     test_file = test_dir / f"test_{test_name}_e2e.py"
     test_file.write_text(test_content, encoding="utf-8")
+    logger.info("Generated E2E test file: %s", test_file)
 
     return f"✅ E2E tests generated successfully\n\n🌐 Base URL: {base_url}\n📝 Test file: {test_file}"

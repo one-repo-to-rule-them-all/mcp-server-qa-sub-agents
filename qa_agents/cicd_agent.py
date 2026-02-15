@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .common import verify_path_exists
 
+logger = logging.getLogger("qa-council-server.cicd-agent")
+
 
 async def generate_github_workflow(repo_path: str, test_command: str = "pytest") -> str:
     """Generate GitHub Actions workflow for CI/CD testing."""
+    logger.info("Generating workflow: repo_path=%s", repo_path)
+
     if not repo_path.strip():
+        logger.warning("Workflow generation aborted: repository path was empty")
         return "❌ Error: Repository path is required"
 
     path_exists, verified_path = verify_path_exists(repo_path)
     if not path_exists:
+        logger.warning("Workflow generation aborted: invalid repository path (%s)", verified_path)
         return f"❌ Error: {verified_path}"
 
+    # Workflow files are generated in the target repository under test.
     workflow_dir = Path(verified_path) / ".github" / "workflows"
     workflow_dir.mkdir(parents=True, exist_ok=True)
 
@@ -55,5 +63,6 @@ jobs:
 
     workflow_file = workflow_dir / "qa_testing.yml"
     workflow_file.write_text(workflow_content, encoding="utf-8")
+    logger.info("Workflow generated at %s", workflow_file)
 
     return f"✅ GitHub Actions workflow generated\n\n📄 Workflow file: {workflow_file}"

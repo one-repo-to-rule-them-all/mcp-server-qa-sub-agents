@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from datetime import datetime
@@ -12,8 +13,11 @@ import httpx
 
 from .common import sanitize_repo_name
 
+logger = logging.getLogger("qa-council-server.github-pr-agent")
+
 
 def _extract_github_info(repo_url: str) -> tuple[str | None, str | None]:
+    """Extract owner/repo metadata from a GitHub URL."""
     parts = repo_url.rstrip("/").split("/")
     if "github.com" not in repo_url or len(parts) < 2:
         return None, None
@@ -30,6 +34,7 @@ async def _create_github_pr(
     head_branch: str,
     base_branch: str = "main",
 ) -> tuple[bool, str]:
+    """Call GitHub API to open a pull request for generated fixes."""
     github_token = os.environ.get("GITHUB_TOKEN", "")
     if not github_token:
         return False, "GitHub token not configured"
@@ -46,17 +51,26 @@ async def _create_github_pr(
         "base": base_branch,
     }
 
+    logger.info("Creating GitHub PR via API: %s/%s head=%s base=%s", owner, repo, head_branch, base_branch)
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data, timeout=30)
         if response.status_code == 201:
-            return True, response.json().get("html_url", "")
+            pr_url = response.json().get("html_url", "")
+            logger.info("Created GitHub PR successfully: %s", pr_url)
+            return True, pr_url
+        logger.error("GitHub API returned non-success: %s %s", response.status_code, response.text)
         return False, f"GitHub API error: {response.status_code} - {response.text}"
     except Exception as exc:  # pragma: no cover - network/remote guard
+        logger.exception("Error while creating GitHub PR")
         return False, f"Error creating PR: {exc}"
 
 
 async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[dict]) -> tuple[bool, str]:
+    """Create and push a branch with generated fix files."""
+    logger.info("Creating test-fix branch: %s in %s (fixes=%d)", branch_name, repo_path, len(fixes))
+
     try:
         checkout = subprocess.run(
             ["git", "-C", repo_path, "checkout", "-b", branch_name],
@@ -65,6 +79,7 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
             timeout=10,
         )
         if checkout.returncode != 0:
+            logger.error("Failed creating branch: %s", checkout.stderr)
             return False, f"Failed to create branch: {checkout.stderr}"
 
         for fix in fixes:
@@ -84,30 +99,39 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
             text=True,
             timeout=30,
         )
+        logger.info("Created and pushed test-fix branch successfully: %s", branch_name)
         return True, branch_name
     except Exception as exc:  # pragma: no cover - git/runtime guard
+        logger.exception("Error while creating test-fix branch")
         return False, f"Error creating fix branch: {exc}"
 
 
 async def create_test_fix_pr(repo_url: str, test_output: str, fixes: str, workspace_dir: Path) -> str:
     """Create GitHub PR with automated test fixes from QA Council analysis."""
+    logger.info("Starting PR creation flow for repo URL: %s", repo_url)
+
     if not repo_url.strip():
+        logger.warning("PR creation aborted: repository URL was empty")
         return "❌ Error: Repository URL is required"
 
     owner, repo = _extract_github_info(repo_url)
     if not owner or not repo:
+        logger.warning("PR creation aborted: invalid GitHub URL (%s)", repo_url)
         return "❌ Error: Invalid GitHub repository URL"
 
     if not os.environ.get("GITHUB_TOKEN", ""):
+        logger.warning("PR creation aborted: GITHUB_TOKEN is not configured")
         return "❌ Error: GITHUB_TOKEN not configured. Set it as an environment variable."
 
     repo_name = sanitize_repo_name(repo_url)
     repo_path = str(workspace_dir / repo_name)
     branch_name = f"qa-council/test-fixes-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
+    # Parse optional fix payload from orchestrator output.
     try:
         fix_list = json.loads(fixes) if fixes.strip() else []
     except Exception:
+        logger.warning("Fix payload was not valid JSON; proceeding without file changes")
         fix_list = []
 
     if fix_list:
