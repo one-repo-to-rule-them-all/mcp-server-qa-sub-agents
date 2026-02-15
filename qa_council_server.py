@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -30,6 +31,25 @@ mcp = FastMCP("qa-council")
 WORKSPACE_DIR = get_directory_from_env("WORKSPACE_DIR", "/app/repos")
 TEST_RESULTS_DIR = get_directory_from_env("TEST_RESULTS_DIR", "/app/test_results")
 COVERAGE_DIR = get_directory_from_env("COVERAGE_DIR", "/app/coverage")
+
+
+def _discover_frontend_entrypoint(repo_path: str) -> str | None:
+    """Return the first matching frontend app entrypoint if present."""
+    repo = Path(repo_path)
+    candidates = [
+        "frontend/src/App.tsx",
+        "frontend/src/App.jsx",
+        "frontend/src/App.ts",
+        "frontend/src/App.js",
+        "frontend/src/app.tsx",
+        "frontend/src/app.jsx",
+        "frontend/src/app.ts",
+        "frontend/src/app.js",
+    ]
+    for candidate in candidates:
+        if (repo / candidate).exists():
+            return candidate
+    return None
 
 
 @mcp.tool()
@@ -126,7 +146,14 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
     results.extend(["\n" + "=" * 70, "👤 AGENT 3: TEST GENERATOR AGENT", "=" * 70])
     logger.info("Orchestration: starting generator agent")
     generated_count = 0
-    for target in ["backend/main.py", "database/database_setup.py", "prestart.py", "frontend/src/App.tsx"]:
+    unit_test_targets = ["backend/main.py", "database/database_setup.py", "prestart.py"]
+    frontend_target = _discover_frontend_entrypoint(repo_path)
+    if frontend_target:
+        unit_test_targets.append(frontend_target)
+    else:
+        results.append("⚠️ Frontend entrypoint not found under frontend/src (checked App/app in js/jsx/ts/tsx)")
+
+    for target in unit_test_targets:
         gen_result = await generate_unit_tests(repo_path=repo_path, target_file=target)
         if "✅" in gen_result:
             generated_count += 1

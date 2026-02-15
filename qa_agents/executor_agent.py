@@ -65,20 +65,26 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
         return f"❌ Test execution error: {result.get('error', 'Unknown error')}"
 
     stdout = result.get("stdout", "")
-    passed = stdout.count(" passed")
-    failed = stdout.count(" failed")
+    summary_match = re.search(r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s", stdout)
+    passed = int(summary_match.group(1) or 0) if summary_match else stdout.count(" passed")
+    failed = int(summary_match.group(2) or 0) if summary_match else stdout.count(" failed")
+    skipped = int(summary_match.group(3) or 0) if summary_match else stdout.count(" skipped")
+    no_tests_collected = "no tests ran" in stdout.lower() or "collected 0 items" in stdout.lower()
+
     coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", stdout)
     coverage_pct = coverage_match.group(1) if coverage_match else "N/A"
 
-    logger.info("Execution summary: passed=%d failed=%d coverage=%s", passed, failed, coverage_pct)
+    logger.info("Execution summary: passed=%d failed=%d skipped=%d coverage=%s no_tests=%s", passed, failed, skipped, coverage_pct, no_tests_collected)
 
-    status = "✅" if result.get("exit_code", 1) == 0 else "⚠️"
+    status = "✅" if result.get("exit_code", 1) == 0 and not no_tests_collected else "⚠️"
     return f"""{status} Test Execution Complete
 
 📊 Results:
 - Passed: {passed}
 - Failed: {failed}
+- Skipped: {skipped}
 - Coverage: {coverage_pct}%
+- No tests collected: {no_tests_collected}
 
 📄 Report: {result.get('report_file')}
 📈 Coverage: {result.get('coverage_file')}

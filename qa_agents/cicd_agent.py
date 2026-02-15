@@ -46,6 +46,14 @@ async def _trigger_github_workflow(
     if response.status_code == 204:
         return True, f"🚀 Triggered GitHub workflow '{workflow_file}' in {repo_identifier} on ref '{ref}'"
 
+    if response.status_code == 401:
+        logger.warning("Workflow dispatch unauthorized for %s", repo_identifier)
+        return (
+            False,
+            "⚠️ Workflow dispatch failed (401 Unauthorized): the configured GitHub token is invalid, expired, "
+            "or missing 'repo' + 'workflow' scopes.",
+        )
+
     logger.warning("Workflow dispatch failed: status=%s body=%s", response.status_code, response.text)
     return (
         False,
