@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 
-from .common import sanitize_repo_name
+from .utils import build_git_clone_url, get_github_token, sanitize_repo_name
 
 logger = logging.getLogger("qa-council-server.repository-agent")
 
@@ -37,8 +36,8 @@ async def clone_repository(repo_url: str, branch: str, workspace_dir: Path) -> s
                 return f"❌ Repository clone failed: Git pull failed: {result.stderr}"
         else:
             logger.info("Cloning new repository into %s", repo_path)
-            github_token = os.environ.get("GITHUB_TOKEN", "")
-            git_url = repo_url.replace("https://", f"https://{github_token}@") if github_token else repo_url
+            github_token = get_github_token()
+            git_url = build_git_clone_url(repo_url, github_token)
             result = subprocess.run(
                 ["git", "clone", "-b", branch, git_url, str(repo_path)],
                 capture_output=True,

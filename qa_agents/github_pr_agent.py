@@ -11,7 +11,7 @@ from pathlib import Path
 
 import httpx
 
-from .common import sanitize_repo_name
+from .utils import sanitize_repo_name
 
 logger = logging.getLogger("qa-council-server.github-pr-agent")
 
