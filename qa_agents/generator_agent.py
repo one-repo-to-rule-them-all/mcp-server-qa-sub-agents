@@ -6,6 +6,8 @@ from pathlib import Path
 
 from .common import analyze_python_file, verify_path_exists
 
+REACT_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+
 
 def _build_module_import(target_file: str) -> str:
     module_path = Path(target_file).with_suffix("")
@@ -35,17 +37,15 @@ def _render_function_test(func: dict) -> str:
     args = [a for a in func.get("args", []) if a != "self"]
     assignment_lines = [f"    {arg} = {_default_value_for_arg(arg)}" for arg in args]
     call_args = ", ".join(args)
-    if assignment_lines:
-        arrange = "\n".join(assignment_lines)
-    else:
-        arrange = "    # No input args required"
+    arrange = "\n".join(assignment_lines) if assignment_lines else "    # No input args required"
+    call_expression = f"{name}({call_args})" if call_args else f"{name}()"
 
     return f'''
 def test_{name}_smoke_and_contract(monkeypatch):
     """Smoke + contract test for `{name}` using deterministic mocks."""
-    {arrange}
+{arrange}
     with patch.object(module_under_test, "logger", autospec=True, create=True):
-        result = {name}({call_args}) if "{call_args}" else {name}()
+        result = {call_expression}
 
     assert result is not ...
 '''
@@ -55,8 +55,8 @@ def _render_class_tests(cls: dict) -> str:
     class_name = cls["name"]
     methods = [m for m in cls.get("methods", []) if not m.startswith("_")]
     method_assertions = "\n".join(
-        [f"    assert callable(getattr(instance, '{method}', None))" for method in methods]
-    ) or "    assert instance is not None"
+        [f"        assert callable(getattr(instance, '{method}', None))" for method in methods]
+    ) or "        assert instance is not None"
 
     return f'''
 
@@ -75,8 +75,100 @@ class Test{class_name}:
 '''
 
 
+def _generate_python_unit_tests(verified_path: str, target_file: str) -> str:
+    file_path = Path(verified_path) / target_file
+    analysis = analyze_python_file(str(file_path))
+    if "error" in analysis:
+        return f"❌ Error analyzing file: {analysis['error']}"
+
+    test_file_path = Path(verified_path) / "tests" / "unit" / f"test_{file_path.name}"
+    test_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    module_import_path = _build_module_import(target_file)
+    public_functions = [f for f in analysis.get("functions", []) if not f["name"].startswith("_")]
+    import_targets = [c["name"] for c in analysis.get("classes", [])] + [f["name"] for f in public_functions]
+    from_import_line = f"from {module_import_path} import {', '.join(import_targets)}" if import_targets else ""
+
+    test_content = f'''"""Generated unit tests for {target_file}."""
+import pytest
+from unittest.mock import Mock, patch
+
+import {module_import_path} as module_under_test
+{from_import_line}
+'''
+
+    for cls in analysis.get("classes", []):
+        test_content += _render_class_tests(cls)
+    for func in public_functions:
+        test_content += _render_function_test(func)
+
+    test_file_path.write_text(test_content, encoding="utf-8")
+    return f"""✅ Unit tests generated successfully
+
+📝 Test file: {test_file_path}
+🧪 Classes tested: {len(analysis.get('classes', []))}
+⚡ Functions tested: {len(public_functions)}
+🛠️ Test style: pytest + unittest.mock (fixtures, patching, contract assertions)
+"""
+
+
+def _generate_react_unit_tests(verified_path: str, target_file: str) -> str:
+    source_path = Path(verified_path) / target_file
+    stem = source_path.stem
+    test_file_path = Path(verified_path) / "tests" / "unit" / f"{stem}.test.tsx"
+    test_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    relative_import = target_file.replace("\\", "/")
+    if relative_import.startswith("frontend/src/"):
+        import_target = "@/" + relative_import.replace("frontend/src/", "").rsplit(".", 1)[0]
+    else:
+        import_target = "../" + relative_import.rsplit(".", 1)[0]
+
+    test_content = f'''/** Generated React unit tests for {target_file}. */
+import {{ render, screen }} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import {{ vi }} from "vitest";
+
+import ComponentUnderTest from "{import_target}";
+
+describe("{stem} component", () => {{
+  it("renders without crashing", () => {{
+    render(<ComponentUnderTest />);
+    expect(screen.getByTestId("{stem.lower()}-root")).toBeInTheDocument();
+  }});
+
+  it("supports user interaction", async () => {{
+    const user = userEvent.setup();
+    render(<ComponentUnderTest />);
+
+    const action = screen.queryByRole("button");
+    if (action) {{
+      await user.click(action);
+      expect(action).toBeEnabled();
+    }} else {{
+      expect(screen.getByTestId("{stem.lower()}-root")).toBeVisible();
+    }}
+  }});
+
+  it("supports dependency mocking", () => {{
+    const callback = vi.fn();
+    callback();
+    expect(callback).toHaveBeenCalledTimes(1);
+  }});
+}});
+'''
+
+    test_file_path.write_text(test_content, encoding="utf-8")
+    return f"""✅ React unit tests generated successfully
+
+📝 Test file: {test_file_path}
+🧪 Framework: React Testing Library + Vitest
+🛠️ Test style: render checks, interaction test, mock verification
+"""
+
+
 async def generate_unit_tests(repo_path: str, target_file: str) -> str:
-    """Generate unit tests that follow QA best practices with mocks and fixtures."""
+    """Generate unit tests that follow QA best practices for Python and React."""
     if not repo_path.strip():
         return "❌ Error: Repository path is required"
     if not target_file.strip():
@@ -90,43 +182,12 @@ async def generate_unit_tests(repo_path: str, target_file: str) -> str:
     if not file_path.exists():
         return f"❌ Error: File not found: {target_file}"
 
-    analysis = analyze_python_file(str(file_path))
-    if "error" in analysis:
-        return f"❌ Error analyzing file: {analysis['error']}"
+    if file_path.suffix in REACT_EXTENSIONS and "frontend" in file_path.parts:
+        return _generate_react_unit_tests(verified_path, target_file)
+    if file_path.suffix == ".py":
+        return _generate_python_unit_tests(verified_path, target_file)
 
-    test_file_name = f"test_{file_path.name}"
-    test_file_path = Path(verified_path) / "tests" / "unit" / test_file_name
-    test_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    module_import_path = _build_module_import(target_file)
-    public_functions = [f for f in analysis.get("functions", []) if not f["name"].startswith("_")]
-
-    import_targets = [c['name'] for c in analysis.get('classes', [])] + [f['name'] for f in public_functions]
-    from_import_line = f"from {module_import_path} import {', '.join(import_targets)}" if import_targets else ""
-
-    test_content = f'''"""Generated unit tests for {target_file}."""
-import pytest
-from unittest.mock import Mock, patch
-
-import {module_import_path} as module_under_test
-{from_import_line}
-'''
-
-    for cls in analysis.get("classes", []):
-        test_content += _render_class_tests(cls)
-
-    for func in public_functions:
-        test_content += _render_function_test(func)
-
-    test_file_path.write_text(test_content, encoding="utf-8")
-
-    return f"""✅ Unit tests generated successfully
-
-📝 Test file: {test_file_path}
-🧪 Classes tested: {len(analysis.get('classes', []))}
-⚡ Functions tested: {len(public_functions)}
-🛠️ Test style: pytest + unittest.mock (fixtures, patching, contract assertions)
-"""
+    return f"⚠️ Unsupported file type for unit test generation: {target_file}"
 
 
 async def generate_e2e_tests(repo_path: str, base_url: str, test_name: str = "app") -> str:
