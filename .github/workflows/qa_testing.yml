@@ -1,0 +1,60 @@
+name: Autonomous QA Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install pytest pytest-cov pytest-html playwright
+        playwright install chromium
+        playwright install-deps chromium
+    
+    - name: Run unit tests with coverage
+      run: |
+        pytest tests/ --cov=. --cov-report=xml --cov-report=html --cov-report=term -v
+      continue-on-error: true
+    
+    - name: Run E2E tests
+      run: |
+        pytest tests/e2e/ -v --headed
+      continue-on-error: true
+      
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          htmlcov/
+          coverage.xml
+          .coverage
+    
+    - name: Upload HTML test report
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: pytest-report
+        path: report.html
