@@ -16,4 +16,8 @@ def get_directory_from_env(env_name: str, default_path: str) -> Path:
 
 def get_github_token() -> str:
     """Return GitHub token from environment if configured."""
-    return os.environ.get("GITHUB_TOKEN", "")
+    for env_name in ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT"):
+        token = os.environ.get(env_name, "").strip()
+        if token:
+            return token
+    return ""
