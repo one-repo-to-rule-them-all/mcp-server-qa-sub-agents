@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .common import analyze_python_file, verify_path_exists
+from .utils import analyze_python_file, verify_path_exists
 
 logger = logging.getLogger("qa-council-server.analyzer-agent")
 

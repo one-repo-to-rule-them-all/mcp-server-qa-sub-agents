@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -17,6 +16,7 @@ from qa_agents.generator_agent import generate_unit_tests as generator_agent_gen
 from qa_agents.github_pr_agent import create_test_fix_pr as github_agent_create_test_fix_pr
 from qa_agents.repair_agent import repair_failing_tests as repair_agent_repair_failing_tests
 from qa_agents.repository_agent import clone_repository as repository_agent_clone_repository
+from qa_agents.utils import get_directory_from_env
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,13 +27,9 @@ logger = logging.getLogger("qa-council-server")
 
 mcp = FastMCP("qa-council")
 
-WORKSPACE_DIR = Path("/app/repos")
-TEST_RESULTS_DIR = Path("/app/test_results")
-COVERAGE_DIR = Path("/app/coverage")
-
-WORKSPACE_DIR.mkdir(exist_ok=True)
-TEST_RESULTS_DIR.mkdir(exist_ok=True)
-COVERAGE_DIR.mkdir(exist_ok=True)
+WORKSPACE_DIR = get_directory_from_env("WORKSPACE_DIR", "/app/repos")
+TEST_RESULTS_DIR = get_directory_from_env("TEST_RESULTS_DIR", "/app/test_results")
+COVERAGE_DIR = get_directory_from_env("COVERAGE_DIR", "/app/coverage")
 
 
 @mcp.tool()
@@ -79,10 +75,22 @@ async def repair_failing_tests(repo_path: str = "", test_output: str = "") -> st
 
 
 @mcp.tool()
-async def generate_github_workflow(repo_path: str = "", test_command: str = "pytest") -> str:
-    """Generate GitHub Actions workflow for target repositories under test."""
+async def generate_github_workflow(
+    repo_path: str = "",
+    test_command: str = "pytest",
+    trigger_workflow: str = "true",
+    workflow_repo: str = "one-repo-to-rule-them-all/media-collection-tracker",
+    workflow_ref: str = "main",
+) -> str:
+    """Generate and optionally trigger GitHub Actions workflow for target repositories."""
     logger.info("CI/CD Agent: generating workflow for %s", repo_path)
-    return await cicd_agent_generate_github_workflow(repo_path, test_command)
+    return await cicd_agent_generate_github_workflow(
+        repo_path=repo_path,
+        test_command=test_command,
+        trigger_workflow=trigger_workflow,
+        workflow_repo=workflow_repo,
+        workflow_ref=workflow_ref,
+    )
 
 
 @mcp.tool()
