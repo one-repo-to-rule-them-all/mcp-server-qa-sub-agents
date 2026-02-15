@@ -22,6 +22,13 @@ from pathlib import Path
 from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 import httpx
+from qa_agents.analyzer_agent import analyze_codebase as analyzer_agent_analyze_codebase
+from qa_agents.cicd_agent import generate_github_workflow as cicd_agent_generate_github_workflow
+from qa_agents.executor_agent import execute_tests as executor_agent_execute_tests
+from qa_agents.generator_agent import generate_e2e_tests as generator_agent_generate_e2e_tests
+from qa_agents.generator_agent import generate_unit_tests as generator_agent_generate_unit_tests
+from qa_agents.repair_agent import repair_failing_tests as repair_agent_repair_failing_tests
+from qa_agents.repository_agent import clone_repository as repository_agent_clone_repository
 
 # Configure logging to stderr
 logging.basicConfig(
@@ -397,388 +404,44 @@ async def create_test_fix_branch(repo_path: str, branch_name: str, fixes: list) 
 @mcp.tool()
 async def clone_repository(repo_url: str = "", branch: str = "main") -> str:
     """Clone or update a GitHub repository for testing."""
-    if not repo_url.strip():
-        return "❌ Error: Repository URL is required"
-    
-    logger.info(f"Cloning repository: {repo_url}")
-    
-    success, result = clone_or_update_repo(repo_url, branch)
-    
-    if success:
-        return f"✅ Repository ready at: {result}"
-    else:
-        return f"❌ Repository clone failed: {result}"
+    logger.info(f"Repository Agent: cloning/updating {repo_url}")
+    return await repository_agent_clone_repository(repo_url, branch, WORKSPACE_DIR)
 
 @mcp.tool()
 async def analyze_codebase(repo_path: str = "", file_pattern: str = "*.py") -> str:
     """Analyze Python codebase structure and identify testable components."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    
-    # FIXED: Verify path exists
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        return f"❌ Error: {verified_path}"
-    
-    path = Path(verified_path)
-    logger.info(f"Analyzing codebase at: {verified_path}")
-    
-    try:
-        # Use os.walk for better compatibility
-        python_files = []
-        for root, dirs, files in os.walk(verified_path):
-            # Skip common ignore directories
-            dirs[:] = [d for d in dirs if d not in ['__pycache__', '.git', 'venv', 'env', 'node_modules']]
-            for file in files:
-                if file.endswith('.py') and not file.startswith('test_'):
-                    python_files.append(os.path.join(root, file))
-        
-        if not python_files:
-            return f"⚠️ No Python files found matching pattern: {file_pattern}"
-        
-        analysis = {
-            "total_files": len(python_files),
-            "files": []
-        }
-        
-        for py_file in python_files[:50]:
-            file_analysis = analyze_python_file(py_file)
-            file_analysis["path"] = py_file
-            analysis["files"].append(file_analysis)
-        
-        total_functions = sum(len(f.get("functions", [])) for f in analysis["files"])
-        total_classes = sum(len(f.get("classes", [])) for f in analysis["files"])
-        
-        result = f"""📊 Codebase Analysis Complete
-
-📁 Files analyzed: {analysis['total_files']}
-⚡ Functions found: {total_functions}
-🏗️ Classes found: {total_classes}
-
-Top files for testing:
-"""
-        for i, file_info in enumerate(analysis["files"][:10], 1):
-            if "error" not in file_info:
-                result += f"\n{i}. {Path(file_info['path']).name}"
-                result += f"\n   - Functions: {len(file_info['functions'])}"
-                result += f"\n   - Classes: {len(file_info['classes'])}"
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Analysis error: {e}")
-        return f"❌ Error analyzing codebase: {str(e)}"
+    logger.info(f"Analyzer Agent: analyzing {repo_path}")
+    return await analyzer_agent_analyze_codebase(repo_path, file_pattern)
 
 @mcp.tool()
 async def generate_unit_tests(repo_path: str = "", target_file: str = "") -> str:
     """Generate unit tests for Python functions and classes in a file."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    if not target_file.strip():
-        return "❌ Error: Target file path is required"
-    
-    logger.info(f"Generating unit tests for: {target_file}")
-    
-    # FIXED: Better path resolution
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        return f"❌ Error: Repository path issue - {verified_path}"
-    
-    file_path = Path(verified_path) / target_file
-    
-    if not file_path.exists():
-        return f"❌ Error: File not found: {target_file}"
-    
-    try:
-        analysis = analyze_python_file(str(file_path))
-        
-        if "error" in analysis:
-            return f"❌ Error analyzing file: {analysis['error']}"
-        
-        test_file_name = f"test_{file_path.name}"
-        test_file_path = Path(verified_path) / "tests" / "unit" / test_file_name
-        test_file_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        test_content = f'''"""Generated unit tests for {file_path.name}"""
-import pytest
-import sys
-from pathlib import Path
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-'''
-        
-        for cls in analysis.get("classes", []):
-            test_content += generate_unit_test(cls, str(file_path))
-        
-        for func in analysis.get("functions", []):
-            if not func["name"].startswith("_"):
-                test_content += generate_unit_test(func, str(file_path))
-        
-        with open(test_file_path, 'w') as f:
-            f.write(test_content)
-        
-        return f"""✅ Unit tests generated successfully
-
-📝 Test file: {test_file_path}
-🧪 Classes tested: {len(analysis.get('classes', []))}
-⚡ Functions tested: {len([f for f in analysis.get('functions', []) if not f['name'].startswith('_')])}
-
-Next steps:
-1. Review and customize generated tests
-2. Run: pytest {test_file_path}
-"""
-        
-    except Exception as e:
-        logger.error(f"Test generation error: {e}")
-        return f"❌ Error generating tests: {str(e)}"
+    logger.info(f"Generator Agent (unit): generating tests for {target_file}")
+    return await generator_agent_generate_unit_tests(repo_path, target_file)
 
 @mcp.tool()
 async def generate_e2e_tests(repo_path: str = "", base_url: str = "", test_name: str = "app") -> str:
     """Generate Playwright E2E tests for web applications."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    if not base_url.strip():
-        return "❌ Error: Base URL is required"
-    
-    logger.info(f"Generating E2E tests for: {base_url}")
-    
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        return f"❌ Error: {verified_path}"
-    
-    repo = Path(verified_path)
-    
-    try:
-        test_dir = repo / "tests" / "e2e"
-        test_dir.mkdir(parents=True, exist_ok=True)
-        
-        test_content = generate_playwright_test(base_url, test_name)
-        
-        test_file = test_dir / f"test_{test_name}_e2e.py"
-        with open(test_file, 'w') as f:
-            f.write(test_content)
-        
-        conftest_content = '''"""Pytest configuration for E2E tests."""
-import pytest
-from playwright.sync_api import sync_playwright
-
-@pytest.fixture(scope="session")
-def browser():
-    """Launch browser for E2E tests."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        yield browser
-        browser.close()
-
-@pytest.fixture(scope="function")
-def page(browser):
-    """Create a new page for each test."""
-    context = browser.new_context(
-        viewport={'width': 1920, 'height': 1080}
-    )
-    page = context.new_page()
-    yield page
-    page.close()
-    context.close()
-
-@pytest.fixture
-def base_url():
-    """Base URL for the application."""
-    return "''' + base_url + '''"
-'''
-        
-        conftest_file = test_dir / "conftest.py"
-        with open(conftest_file, 'w') as f:
-            f.write(conftest_content)
-        
-        return f"""✅ E2E tests generated successfully
-
-🌐 Base URL: {base_url}
-📝 Test file: {test_file}
-⚙️ Config file: {conftest_file}
-
-Next steps:
-1. Customize test scenarios
-2. Run: pytest {test_file} --headed (to see browser)
-"""
-        
-    except Exception as e:
-        logger.error(f"E2E generation error: {e}")
-        return f"❌ Error generating E2E tests: {str(e)}"
+    logger.info(f"Generator Agent (e2e): generating tests for {base_url}")
+    return await generator_agent_generate_e2e_tests(repo_path, base_url, test_name)
 
 @mcp.tool()
 async def execute_tests(repo_path: str = "", test_path: str = "") -> str:
     """Execute pytest tests with coverage reporting."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        return f"❌ Error: {verified_path}"
-    
-    logger.info(f"Executing tests in: {verified_path}")
-    
-    success, result = run_pytest(verified_path, test_path)
-    
-    if not success:
-        return f"❌ Test execution error: {result.get('error', 'Unknown error')}"
-    
-    exit_code = result.get("exit_code", 1)
-    stdout = result.get("stdout", "")
-    
-    passed = stdout.count(" passed")
-    failed = stdout.count(" failed")
-    
-    coverage_match = re.search(r'TOTAL\s+\d+\s+\d+\s+(\d+)%', stdout)
-    coverage_pct = coverage_match.group(1) if coverage_match else "N/A"
-    
-    status = "✅" if exit_code == 0 else "⚠️"
-    
-    return f"""{status} Test Execution Complete
-
-📊 Results:
-- Passed: {passed}
-- Failed: {failed}
-- Coverage: {coverage_pct}%
-
-📄 Report: {result.get('report_file')}
-📈 Coverage: {result.get('coverage_file')}
-
-{stdout[:2000]}
-"""
+    logger.info(f"Executor Agent: running tests in {repo_path}")
+    return await executor_agent_execute_tests(repo_path, TEST_RESULTS_DIR, COVERAGE_DIR, test_path)
 
 @mcp.tool()
 async def repair_failing_tests(repo_path: str = "", test_output: str = "") -> str:
     """Analyze test failures and provide repair suggestions."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    
-    logger.info(f"Analyzing test failures for: {repo_path}")
-    
-    if not test_output.strip():
-        return "⚠️ No test output provided. Run execute_tests first to get failure details."
-    
-    try:
-        failures = parse_test_failures(test_output)
-        
-        if not failures:
-            return "✅ No test failures detected - all tests passing!"
-        
-        result = f"🔧 Test Repair Analysis\n\n"
-        result += f"Found {len(failures)} failing test(s)\n\n"
-        
-        for i, failure in enumerate(failures, 1):
-            result += f"{i}. {failure.get('test', 'Unknown test')}\n"
-            suggestions = generate_test_repair(failure)
-            for suggestion in suggestions:
-                result += f"   💡 {suggestion}\n"
-            result += "\n"
-        
-        result += "\n🔄 Recommended Actions:\n"
-        result += "1. Review the specific assertions in failing tests\n"
-        result += "2. Check if implementation changed without updating tests\n"
-        result += "3. Verify test data and fixtures are correct\n"
-        result += "4. Re-run tests after making corrections\n"
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Repair analysis error: {e}")
-        return f"❌ Error analyzing failures: {str(e)}"
+    logger.info(f"Repair Agent: analyzing failures for {repo_path}")
+    return await repair_agent_repair_failing_tests(repo_path, test_output)
 
 @mcp.tool()
 async def generate_github_workflow(repo_path: str = "", test_command: str = "pytest") -> str:
     """Generate GitHub Actions workflow for CI/CD testing."""
-    if not repo_path.strip():
-        return "❌ Error: Repository path is required"
-    
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        return f"❌ Error: {verified_path}"
-    
-    logger.info(f"Generating GitHub workflow for: {verified_path}")
-    
-    try:
-        workflow_dir = Path(verified_path) / ".github" / "workflows"
-        workflow_dir.mkdir(parents=True, exist_ok=True)
-        
-        workflow_content = f'''name: Autonomous QA Testing
-
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest pytest-cov playwright httpx
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
-        playwright install chromium
-        playwright install-deps chromium
-    
-    - name: Run tests with coverage
-      run: |
-        {test_command} --cov=. --cov-report=xml --cov-report=term
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        fail_ci_if_error: false
-    
-    - name: Upload test results
-      uses: actions/upload-artifact@v3
-      if: always()
-      with:
-        name: test-results
-        path: |
-          .coverage
-          coverage.xml
-          htmlcov/
-'''
-        
-        workflow_file = workflow_dir / "qa_testing.yml"
-        with open(workflow_file, 'w') as f:
-            f.write(workflow_content)
-        
-        return f"""✅ GitHub Actions workflow generated
-
-📄 Workflow file: {workflow_file}
-
-Features included:
-- ✓ Runs on push and pull requests
-- ✓ Python 3.11 environment
-- ✓ Pytest with coverage reporting
-- ✓ Playwright E2E testing
-- ✓ Codecov integration
-- ✓ Test artifact uploads
-
-Next steps:
-1. Commit workflow file to repository
-2. Push to GitHub
-3. Check Actions tab for test results
-"""
-        
-    except Exception as e:
-        logger.error(f"Workflow generation error: {e}")
-        return f"❌ Error generating workflow: {str(e)}"
+    logger.info(f"CI/CD Agent: generating workflow for {repo_path}")
+    return await cicd_agent_generate_github_workflow(repo_path, test_command)
 
 @mcp.tool()
 async def create_test_fix_pr(repo_url: str = "", test_output: str = "", fixes: str = "") -> str:
