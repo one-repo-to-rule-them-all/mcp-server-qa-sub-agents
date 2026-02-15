@@ -4,186 +4,189 @@
 
 This MCP server implements a multi-agent autonomous testing system for Python applications. It follows the "Council of Sub-Agents" pattern where specialized agents collaborate to handle different aspects of the QA lifecycle.
 
+## Project Structure
+
+```
+qa_council_server.py              # Slim MCP entry point (~130 lines, tool wrappers only)
+Dockerfile                        # Docker build with agents/ and utils/ copied
+requirements.txt                  # Python dependencies
+
+agents/
+    __init__.py                   # Package exports
+    repository_agent.py           # Clone/update Git repositories
+    analyzer_agent.py             # Enhanced AST analysis with NodeVisitor
+    generator_agent.py            # Strategy-based test generation with mocking
+    executor_agent.py             # pytest execution with coverage
+    repair_agent.py               # Failure parsing and fix suggestions
+    cicd_agent.py                 # GitHub Actions workflow + PR creation
+    orchestrator_agent.py         # Dynamic coordination (no hardcoded targets)
+
+utils/
+    __init__.py                   # Package exports
+    config.py                     # Shared config, logger factory, directory setup
+    path_utils.py                 # Path sanitization and verification
+    git_utils.py                  # Clone, branch, PR operations
+```
+
+### Dependency Flow (DAG — no circular imports)
+
+```
+qa_council_server.py
+    ├── agents/repository_agent   → utils/config, utils/git_utils
+    ├── agents/analyzer_agent     → utils/config, utils/path_utils
+    ├── agents/generator_agent    → utils/config, utils/path_utils, agents/analyzer_agent
+    ├── agents/executor_agent     → utils/config, utils/path_utils
+    ├── agents/repair_agent       → utils/config
+    ├── agents/cicd_agent         → utils/config, utils/path_utils, utils/git_utils
+    └── agents/orchestrator_agent → utils/config, ALL other agents (lazy imports)
+```
+
 ## Agent Responsibilities
 
-### 1. Repository Agent
+### 1. Repository Agent (`agents/repository_agent.py`)
 - **Purpose**: Source code management
-- **Implementation**: `clone_repository()` tool
-- **Functions**: Clone/update repos, branch management, Git operations
+- **Tool**: `clone_repository(repo_url, branch)`
+- **Delegates to**: `utils/git_utils.clone_or_update_repo()`
 
-### 2. Analyzer Agent
-- **Purpose**: Code comprehension and analysis
-- **Implementation**: `analyze_codebase()` tool using Python AST
-- **Functions**: Extract functions, classes, imports, identify testable components
+### 2. Analyzer Agent (`agents/analyzer_agent.py`)
+- **Purpose**: Rich AST-based code comprehension
+- **Tool**: `analyze_codebase(repo_path)`
+- **Returns**: `tuple[str, list[dict]]` — display report AND raw analysis data
 
-### 3. Test Generator Agent
-- **Purpose**: Create test code
-- **Implementation**: `generate_unit_tests()`, `generate_e2e_tests()`
-- **Functions**: Template-based test generation, fixture creation
+#### Enhanced Analysis (per function)
+- `calls` — list of function calls made
+- `raises` — exceptions raised
+- `has_return` — whether function returns a value
+- `decorators`, `docstring`, `is_async`
+- `complexity_indicators`:
+  - `uses_file_io` — calls `open()`, `read_text`, etc.
+  - `uses_subprocess` — calls `subprocess.*`
+  - `uses_http` — calls `httpx.*`, `requests.*`
+  - `uses_os` — calls `os.*`, `Path.*`
+  - `has_try_except`, `has_conditionals`, `has_loops`
 
-### 4. Executor Agent
+#### Enhanced Analysis (per class)
+- `bases` — parent classes
+- `has_init`, `init_args` — constructor details
+- `class_variables` — class-level assignments
+- `methods` — full function analysis for each method
+
+### 3. Test Generator Agent (`agents/generator_agent.py`)
+- **Purpose**: Generate real pytest tests with mocking
+- **Tools**: `generate_unit_tests()`, `generate_e2e_tests()`
+
+#### Mock Strategy Resolution
+The generator examines `complexity_indicators` and `calls` from the analyzer to determine which mocks are needed:
+
+| Code Pattern | Mock Strategy |
+|---|---|
+| `open()` | `@patch("builtins.open", new_callable=mock_open)` |
+| `subprocess.run` | `@patch("module.subprocess.run")` with configurable returncode |
+| `httpx.AsyncClient` | `@patch("module.httpx.AsyncClient")` with AsyncMock |
+| `requests.*` | `@patch("module.requests")` |
+| `os.path.exists` | `@patch("module.os.path.exists", return_value=True)` |
+
+#### Generated Tests Per Function
+1. `test_{name}_success` — happy path with valid inputs and mock assertions
+2. `test_{name}_empty_input` — empty/missing first argument
+3. `test_{name}_various_inputs` — `@pytest.mark.parametrize` edge cases
+4. `test_{name}_error_handling` — trigger exception paths via mocks (if try/except)
+5. `test_{name}_subprocess_timeout` / `_failure` (if uses subprocess)
+6. `test_{name}_file_not_found` (if uses file I/O)
+7. `test_{name}_http_error` (if uses HTTP)
+
+#### Argument Heuristics
+Infers test values from parameter names:
+- `*path*`, `*file*` → `"/tmp/test_file.txt"`
+- `*url*` → `"https://example.com/test"`
+- `*name*` → `"test_value"`
+- `*count*` → `10`
+- `*flag*` → `True`
+- `*data*` → `{"key": "value"}`
+- `branch` → `"main"`
+
+### 4. Executor Agent (`agents/executor_agent.py`)
 - **Purpose**: Run tests and collect metrics
-- **Implementation**: `execute_tests()` tool
-- **Functions**: pytest/Playwright execution, coverage collection, report generation
+- **Tool**: `execute_tests(repo_path, test_path)`
+- **Features**: pytest with coverage, 5-minute timeout
 
-### 5. Repair Agent
-- **Purpose**: Diagnose and fix test failures
-- **Implementation**: `repair_failing_tests()` tool
-- **Functions**: Parse errors, suggest fixes, pattern matching for common issues
+### 5. Repair Agent (`agents/repair_agent.py`)
+- **Purpose**: Diagnose failures and suggest fixes
+- **Tool**: `repair_failing_tests(repo_path, test_output)`
+- **Patterns**: ImportError, AssertionError, FileNotFoundError, AttributeError, TypeError
 
-### 6. CI/CD Agent
-- **Purpose**: Pipeline automation
-- **Implementation**: `generate_github_workflow()` tool
-- **Functions**: Generate workflow YAML, configure triggers, set up jobs
+### 6. CI/CD Agent (`agents/cicd_agent.py`)
+- **Purpose**: Pipeline automation and PR creation
+- **Tools**: `generate_github_workflow()`, `create_test_fix_pr()`
+- **Features**: GitHub Actions YAML, Codecov, Playwright, artifact upload
 
-### 7. Orchestrator Agent
-- **Purpose**: Coordinate full lifecycle
-- **Implementation**: `orchestrate_full_qa_cycle()` tool
-- **Functions**: Execute agents in sequence, handle failures, aggregate results
+### 7. Orchestrator Agent (`agents/orchestrator_agent.py`)
+- **Purpose**: Coordinate full lifecycle with dynamic target selection
+- **Tool**: `orchestrate_full_qa_cycle(repo_url, branch, base_url)`
 
-## Technical Architecture
+#### Dynamic Target Selection
+Replaces hardcoded file list. Scores files by:
+- +2 per public function, +3 per class
+- +1 per complexity indicator
+- Excludes: `__init__.py`, `test_*`, migrations, setup files
+- Returns top 10 files sorted by score
 
-### Code Analysis (AST-based)
-```python
-# Uses Python's ast module to parse source code
-# Extracts: functions, classes, methods, imports
-# Identifies: async functions, decorators, arguments
-```
-
-### Test Generation Patterns
-```python
-# Unit Tests: pytest-based with class/function fixtures
-# E2E Tests: Playwright with page fixtures
-# Integration Tests: Combines unit test patterns
-```
-
-### Test Execution Pipeline
-```
-Source Code → AST Analysis → Test Generation → Execution → Coverage → Reporting
-```
-
-## Best Practices Implemented
-
-### From OpenObserve AI Agent Architecture:
-1. **Modular Agent Design** - Each agent has single responsibility
-2. **Error Recovery** - Agents handle failures gracefully
-3. **Metrics Collection** - Coverage, timing, success rates
-4. **CI/CD Integration** - Automated pipeline generation
-
-### Software Engineering Practices:
-1. **Separation of Concerns** - Clear agent boundaries
-2. **DRY Principle** - Reusable utility functions
-3. **Fail Fast** - Early validation of inputs
-4. **Logging** - Comprehensive stderr logging
-5. **Type Safety** - Consistent string-based parameters
-
-## Usage Patterns
-
-### Simple: Single Tool
-```
-User: "Generate unit tests for myfile.py"
-→ generate_unit_tests() tool called
-→ AST analysis → Template application → File creation
-```
-
-### Complex: Multi-Agent Orchestration
-```
-User: "Set up automated testing for my repo"
-→ orchestrate_full_qa_cycle() called
-→ Repository Agent clones code
-→ Analyzer Agent examines structure
-→ Generator Agent creates tests
-→ Executor Agent runs tests
-→ CI/CD Agent creates workflow
-```
-
-## Extensibility Points
-
-### Adding New Test Types
-1. Create generator function (e.g., `generate_integration_tests()`)
-2. Add MCP tool decorator
-3. Update orchestrator to include new test type
-
-### Supporting New Languages
-1. Add language-specific parser (e.g., esprima for JavaScript)
-2. Create language-specific test templates
-3. Update analyzer to handle new file types
-
-### Adding New CI/CD Platforms
-1. Create workflow template (e.g., GitLab CI)
-2. Add generator function
-3. Extend `generate_github_workflow()` pattern
+#### Pipeline Phases
+1. Clone Repository
+2. Analyze Codebase (rich AST)
+3. Select Test Targets (dynamic scoring)
+4. Generate Tests (per target)
+5. Execute Tests
+6. Repair Analysis (if failures)
+7. CI/CD Workflow Generation
 
 ## Configuration
 
 ### Environment Variables
 - `GITHUB_TOKEN`: GitHub personal access token (optional)
-- `WORKSPACE_DIR`: Repository clone location
-- `TEST_RESULTS_DIR`: Test output location
-- `COVERAGE_DIR`: Coverage report location
+- `WORKSPACE_DIR`: Repository clone location (default: `/app/repos`)
+- `TEST_RESULTS_DIR`: Test output location (default: `/app/test_results`)
+- `COVERAGE_DIR`: Coverage report location (default: `/app/coverage`)
 
 ### Docker Volumes
 - `/app/repos`: Persistent repository storage
 - `/app/test_results`: Test execution results
 - `/app/coverage`: Coverage reports
 
+## Usage
+
+### Docker Build & Run
+```bash
+docker build -t qa-council .
+docker run --rm -i qa-council
+```
+
+### MCP Tool Examples
+```bash
+# Clone a repository
+echo '{"method":"tools/call","params":{"name":"clone_repository","arguments":{"repo_url":"https://github.com/user/repo"}}}' | python qa_council_server.py
+
+# Analyze codebase
+echo '{"method":"tools/call","params":{"name":"analyze_codebase","arguments":{"repo_path":"/app/repos/myrepo"}}}' | python qa_council_server.py
+
+# Generate tests (single file)
+echo '{"method":"tools/call","params":{"name":"generate_unit_tests","arguments":{"repo_path":"/app/repos/myrepo","target_file":"main.py"}}}' | python qa_council_server.py
+
+# Full orchestration
+echo '{"method":"tools/call","params":{"name":"orchestrate_full_qa_cycle","arguments":{"repo_url":"https://github.com/user/repo"}}}' | python qa_council_server.py
+```
+
+### Import Verification
+```bash
+python -c "from agents import *; from utils import *; print('All imports OK')"
+```
+
 ## Error Handling Strategy
 
-1. **Input Validation**: Check all parameters before execution
+1. **Input Validation**: All agents check parameters before execution
 2. **Graceful Degradation**: Return partial results on non-critical errors
-3. **User-Friendly Messages**: Emoji-prefixed status messages
-4. **Detailed Logging**: stderr logs for debugging
-5. **Recovery Suggestions**: Repair agent provides actionable fixes
-
-## Performance Considerations
-
-- **Repository Cloning**: Shallow clones for speed
-- **AST Parsing**: Limited to 50 files per analysis by default
-- **Test Execution**: 5-minute timeout prevents hangs
-- **Coverage Collection**: XML format for efficiency
-
-## Testing the MCP Server
-```bash
-# Test repository cloning
-echo '{"method":"tools/call","params":{"name":"clone_repository","arguments":{"repo_url":"https://github.com/test/repo"}}}' | python qa_council_server.py
-
-# Test code analysis
-echo '{"method":"tools/call","params":{"name":"analyze_codebase","arguments":{"repo_path":"/app/repos/myrepo"}}}' | python qa_council_server.py
-```
-
-## Integration with Claude
-
-Claude can orchestrate complex QA workflows by:
-1. Understanding user intent ("test my web app")
-2. Selecting appropriate agent(s)
-3. Chaining tools in logical sequence
-4. Presenting results in user-friendly format
-
-Example conversation:
-```
-User: "My tests are failing, can you help?"
-Claude: → calls execute_tests() to see failures
-        → calls repair_failing_tests() with output
-        → presents suggestions with context
-```
-
-## Maintenance
-
-### Updating Dependencies
-- Edit `requirements.txt`
-- Rebuild Docker image
-- Test with `docker run` before deployment
-
-### Adding Features
-- Follow single-responsibility principle
-- Add comprehensive error handling
-- Update documentation
-- Test in isolation first
-
-### Monitoring
-- Check Docker logs: `docker logs <container>`
-- Review test result files in `/app/test_results`
-- Monitor coverage trends in `/app/coverage`
+3. **Comprehensive Logging**: stderr logs via `utils.config.get_logger()`
+4. **Recovery Suggestions**: Repair agent provides actionable fixes
 
 ## References
 
