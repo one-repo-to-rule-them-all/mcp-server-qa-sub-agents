@@ -30,8 +30,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Copy the server code
+# Copy the server code and agent package
 COPY qa_council_server.py .
+COPY qa_agents/ qa_agents/
+COPY conftest.py pytest.ini setup.cfg ./
+COPY tests/ tests/
 
 # Create non-root user
 RUN useradd -m -u 1000 mcpuser && \
