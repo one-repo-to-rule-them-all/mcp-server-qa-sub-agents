@@ -30,7 +30,15 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
         return f"❌ Error: Invalid repository path: {verified_path}"
 
     py_files = list(repo.rglob(file_pattern))
-    py_files = [f for f in py_files if ".git" not in str(f) and "__pycache__" not in str(f)]
+    excluded_parts = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+    py_files = [
+        f
+        for f in py_files
+        if not excluded_parts.intersection(f.parts)
+        and not f.name.startswith("test_")
+        and not f.name.endswith("_test.py")
+        and "tests" not in f.parts
+    ]
 
     if not py_files:
         logger.info("No files matched pattern during analysis: %s", file_pattern)

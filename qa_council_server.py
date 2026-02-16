@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -33,6 +36,14 @@ TEST_RESULTS_DIR = get_directory_from_env("TEST_RESULTS_DIR", "/app/test_results
 COVERAGE_DIR = get_directory_from_env("COVERAGE_DIR", "/app/coverage")
 
 
+@dataclass
+class GeneratedArtifact:
+    """Generated file metadata used to open pull requests with concrete changes."""
+
+    relative_path: str
+    description: str
+
+
 def _discover_frontend_entrypoint(repo_path: str) -> str | None:
     """Return the first matching frontend app entrypoint if present."""
     repo = Path(repo_path)
@@ -50,6 +61,44 @@ def _discover_frontend_entrypoint(repo_path: str) -> str | None:
         if (repo / candidate).exists():
             return candidate
     return None
+
+
+def _discover_unit_test_targets(repo_path: str) -> list[str]:
+    """Find source files that should receive generated unit tests."""
+    repo = Path(repo_path)
+    py_targets = sorted(
+        str(path.relative_to(repo))
+        for path in repo.rglob("*.py")
+        if not {".git", "__pycache__", ".venv", "venv", "node_modules"}.intersection(path.parts)
+        and "tests" not in path.parts
+        and not path.name.endswith("_test.py")
+        and path.name != "__init__.py"
+    )
+
+    targets: list[str] = py_targets
+    frontend_entrypoint = _discover_frontend_entrypoint(repo_path)
+    if frontend_entrypoint:
+        targets.append(frontend_entrypoint)
+    return targets
+
+
+def _extract_generated_artifact(repo_path: str, generator_output: str) -> GeneratedArtifact | None:
+    """Extract generated file path from a generator message."""
+    match = re.search(r"(?:📝 Test file|📄 Workflow file):\s*(.+)", generator_output)
+    if not match:
+        return None
+
+    generated_path = Path(match.group(1).strip())
+    if not generated_path.exists():
+        return None
+
+    repo = Path(repo_path)
+    try:
+        relative_path = str(generated_path.relative_to(repo))
+    except ValueError:
+        return None
+
+    return GeneratedArtifact(relative_path=relative_path, description=f"Generated tests for {relative_path}")
 
 
 @mcp.tool()
@@ -146,24 +195,29 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
     results.extend(["\n" + "=" * 70, "👤 AGENT 3: TEST GENERATOR AGENT", "=" * 70])
     logger.info("Orchestration: starting generator agent")
     generated_count = 0
-    unit_test_targets = ["backend/main.py", "database/database_setup.py", "prestart.py"]
-    frontend_target = _discover_frontend_entrypoint(repo_path)
-    if frontend_target:
-        unit_test_targets.append(frontend_target)
-    else:
-        results.append("⚠️ Frontend entrypoint not found under frontend/src (checked App/app in js/jsx/ts/tsx)")
+    generated_artifacts: list[GeneratedArtifact] = []
+    unit_test_targets = _discover_unit_test_targets(repo_path)
+    if not unit_test_targets:
+        results.append("⚠️ No source targets discovered for unit test generation")
 
     for target in unit_test_targets:
         gen_result = await generate_unit_tests(repo_path=repo_path, target_file=target)
         if "✅" in gen_result:
             generated_count += 1
+            artifact = _extract_generated_artifact(repo_path, gen_result)
+            if artifact:
+                generated_artifacts.append(artifact)
         results.append(f"\n📝 Target: {target}")
         results.append(gen_result[:300])
 
     if base_url.strip():
         e2e_result = await generate_e2e_tests(repo_path=repo_path, base_url=base_url, test_name="media_tracker")
         results.extend(["\n🌐 E2E Tests:", e2e_result])
-        generated_count += 1
+        if "✅" in e2e_result:
+            generated_count += 1
+            artifact = _extract_generated_artifact(repo_path, e2e_result)
+            if artifact:
+                generated_artifacts.append(artifact)
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 4: EXECUTOR AGENT", "=" * 70])
     logger.info("Orchestration: starting executor agent")
@@ -179,7 +233,30 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 6: CI/CD AGENT", "=" * 70])
     logger.info("Orchestration: starting CI/CD agent")
-    results.append(await generate_github_workflow(repo_path=repo_path, test_command="pytest --cov=backend --cov-report=xml -v"))
+    workflow_result = await generate_github_workflow(repo_path=repo_path, test_command="pytest --cov=backend --cov-report=xml -v")
+    results.append(workflow_result)
+
+    workflow_artifact = _extract_generated_artifact(repo_path, workflow_result)
+    if workflow_artifact:
+        generated_artifacts.append(workflow_artifact)
+
+    if generated_artifacts:
+        results.extend(["\n" + "=" * 70, "👤 AGENT 7: GITHUB PR AGENT", "=" * 70])
+        logger.info("Orchestration: starting github PR agent")
+        fixes = []
+        for artifact in generated_artifacts:
+            artifact_path = Path(repo_path) / artifact.relative_path
+            fixes.append(
+                {
+                    "file": artifact.relative_path,
+                    "content": artifact_path.read_text(encoding="utf-8"),
+                    "description": artifact.description,
+                }
+            )
+        pr_result = await create_test_fix_pr(repo_url=repo_url, test_output=exec_result, fixes=json.dumps(fixes))
+        results.append(pr_result)
+    else:
+        results.append("\n⏭️  Agent 7 (GitHub PR) skipped - no generated artifacts available")
 
     results.extend(
         [
@@ -194,6 +271,7 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
   ✅ Executor Agent - Tests executed with coverage
   {"✅ Repairer Agent - Failures analyzed" if "failed" in exec_result.lower() else "⏭️  Repairer Agent - Skipped (no failures)"}
   ✅ CI/CD Agent - GitHub Actions workflow generated
+  {"✅ GitHub PR Agent - Test PR created" if generated_artifacts else "⏭️  GitHub PR Agent - Skipped (no generated artifacts)"}
 """,
         ]
     )
