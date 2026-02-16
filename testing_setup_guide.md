@@ -217,6 +217,11 @@ agent.generate_tests(
 ```
 
 ```bash
+
+run 
+chmod +x run_qa.sh
+./run_go.sh
+
 docker build -t mcp-server-qa-sub-agents:latest .
 
 $ MSYS_NO_PATHCONV=1 docker run -it   -e GITHUB_TOKEN="${GITHUB_TOKEN}"   -v "$(pwd)/results:/app/test_results"   -v "$(pwd)/coverage:/app/coverage"   mcp-server-qa-sub-agents:latest   /bin/bash
