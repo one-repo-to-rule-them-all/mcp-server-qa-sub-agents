@@ -1,268 +1,512 @@
-# Media Collection Tracker - Testing Setup Guide
+# QA Testing Guide: Media Collection Tracker
 
-## 📋 Quick Setup Instructions
+## Prerequisites
 
-Follow these steps to add automated testing to your repository:
+- Docker (local image already built)
+- Python 3.11+ (for native execution)
+- GitHub Personal Access Token (for CI/CD workflow triggers)
 
-### Step 1: Create Directory Structure
+---
 
+## GitHub Token Setup
+
+### 1. Create GitHub Personal Access Token
+
+Navigate to: **Settings → Developer settings → Personal access tokens → Tokens (classic)**
+
+**Required Scopes:**
+- `repo` (full control of private repositories)
+- `workflow` (update GitHub Action workflows)
+
+### 2. Configure Token (Choose One Method)
+
+#### Option A: Environment Variable (Recommended for Docker)
 ```bash
-cd /path/to/media-collection-tracker
-
-# Create test directories
-mkdir -p .github/workflows
-mkdir -p tests/e2e
-mkdir -p tests/unit
+export GITHUB_TOKEN="ghp_your_token_here"
 ```
 
-### Step 2: Add GitHub Actions Workflow
-
-Copy the `qa_testing.yml` file to your repository:
-
+#### Option B: Docker Secret Mount
 ```bash
-# Place the workflow file
-cp qa_testing.yml .github/workflows/qa_testing.yml
+# Create token file
+echo "ghp_your_token_here" > ~/.github_token
+chmod 600 ~/.github_token
+
+# Mount when running container
+docker run -v ~/.github_token:/run/secrets/github_token ...
 ```
 
-**File location**: `.github/workflows/qa_testing.yml`
-
-This workflow will:
-- ✅ Run automatically on every push to `main` or `develop`
-- ✅ Run on every pull request
-- ✅ Execute unit tests with coverage
-- ✅ Execute E2E tests with Playwright
-- ✅ Upload coverage reports
-- ✅ Generate HTML test reports
-
-### Step 3: Add Pytest Configuration
-
+#### Option C: Python Environment File
 ```bash
-# Copy pytest configuration to repository root
-cp pytest.ini .
+# Create .env file in project root
+echo "GITHUB_TOKEN=ghp_your_token_here" > .env
 ```
 
-**File location**: `pytest.ini` (root of repository)
+---
 
-### Step 4: Add E2E Test Files
+## Execution Methods
 
+### Method 1: Docker Execution (Recommended)
+
+#### Single Command - Full QA Lifecycle
 ```bash
-# Copy E2E test configuration
-cp conftest_e2e.py tests/e2e/conftest.py
-
-# Copy E2E test examples
-cp test_media_tracker_e2e.py tests/e2e/test_media_tracker_e2e.py
+docker run --rm \
+  -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+  -v "$(pwd)/results:/app/test_results" \
+  -v "$(pwd)/coverage:/app/coverage" \
+  your-qa-image:latest \
+  python -c "
+from qa_orchestrator import run_full_cycle
+run_full_cycle(
+    repo_url='https://github.com/one-repo-to-rule-them-all/media-collection-tracker',
+    branch='main',
+    base_url=''
+)
+"
 ```
 
-### Step 5: Update Requirements
-
-Add these testing dependencies to your `requirements.txt` or create a `requirements-dev.txt`:
-
-```txt
-pytest>=7.4.0
-pytest-cov>=4.1.0
-pytest-asyncio>=0.21.0
-pytest-html>=3.2.0
-playwright>=1.40.0
-```
-
-### Step 6: Install Playwright Browsers (Local Only)
-
+#### Interactive Shell (For Debugging)
 ```bash
-# Install Playwright browsers for local testing
-playwright install chromium
+docker run -it --rm \
+  -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+  -v "$(pwd)/results:/app/test_results" \
+  -v "$(pwd)/coverage:/app/coverage" \
+  your-qa-image:latest \
+  /bin/bash
 ```
 
-### Step 7: Customize the Tests
+Then inside container:
+```bash
+python orchestrator_cli.py \
+  --repo-url https://github.com/one-repo-to-rule-them-all/media-collection-tracker \
+  --branch main
+```
 
-#### For E2E Tests (`tests/e2e/test_media_tracker_e2e.py`):
+#### With MCP Gateway Server
+```bash
+docker run --rm \
+  -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+  -v "$(pwd)/results:/app/test_results" \
+  -v "$(pwd)/coverage:/app/coverage" \
+  -p 8080:8080 \
+  your-qa-image:latest \
+  python -m qa_mcp_server
+```
 
-Replace the commented placeholders with actual selectors from your application:
-
+Then trigger via MCP client:
 ```python
-# Example: Instead of this comment
-# page.click("button:has-text('Add Media')")
+import anthropic
 
-# Add actual code based on your HTML
-page.click("#add-media-button")
+client = anthropic.Anthropic()
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    tools=[{
+        "name": "orchestrate_full_qa_cycle",
+        "description": "Run full QA lifecycle",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo_url": {"type": "string"},
+                "branch": {"type": "string"},
+                "base_url": {"type": "string"}
+            }
+        }
+    }],
+    messages=[{
+        "role": "user",
+        "content": "Run QA on media-collection-tracker"
+    }]
+)
 ```
 
-To find the right selectors:
-1. Open your app in a browser
-2. Right-click an element → Inspect
-3. Use the element's ID, class, or text
+---
 
-#### For Unit Tests:
+### Method 2: Python Direct Execution
 
-Create unit test files in `tests/unit/` for your Python modules:
+#### Installation
+```bash
+# Clone QA orchestrator repo
+git clone https://github.com/your-org/qa-orchestrator.git
+cd qa-orchestrator
 
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure GitHub token
+export GITHUB_TOKEN="ghp_your_token_here"
+```
+
+#### Run Full Lifecycle
+```bash
+python orchestrator_cli.py \
+  --repo-url https://github.com/one-repo-to-rule-them-all/media-collection-tracker \
+  --branch main \
+  --output-dir ./qa_results
+```
+
+#### Python Script Execution
 ```python
-# tests/unit/test_models.py
-import pytest
-from your_app import models
+from qa_orchestrator import run_full_cycle
+import os
 
-def test_media_model_creation():
-    media = models.Media(
-        title="Test Movie",
-        type="movie",
-        year=2024
-    )
-    assert media.title == "Test Movie"
-    assert media.type == "movie"
+# Ensure token is set
+os.environ['GITHUB_TOKEN'] = 'ghp_your_token_here'
+
+results = run_full_cycle(
+    repo_url='https://github.com/one-repo-to-rule-them-all/media-collection-tracker',
+    branch='main',
+    base_url='',  # Optional: for E2E tests
+    output_dir='./qa_results'
+)
+
+print(f"Tests passed: {results['executor']['passed']}")
+print(f"Coverage: {results['executor']['coverage']}%")
+print(f"Workflow generated: {results['cicd']['workflow_path']}")
 ```
 
-### Step 8: Test Locally
+---
 
+## QA Lifecycle Stages
+
+The orchestrator executes these agents in sequence:
+
+### 1. Repository Agent
+- Clones target repository
+- Validates branch existence
+- Location: `/app/repos/media-collection-tracker`
+
+### 2. Inspector/Analyzer Agent
+- Static code analysis
+- Identifies testable components
+- Detects classes, functions, complexity metrics
+
+**Output:**
+```json
+{
+  "files_analyzed": 10,
+  "functions_found": 40,
+  "classes_found": 4,
+  "top_files": [...]
+}
+```
+
+### 3. Test Generator Agent
+- Creates unit tests (Python: pytest, JS/React: Vitest)
+- Generates E2E tests (Playwright)
+- Follows AAA pattern (Arrange, Act, Assert)
+
+**Generated Files:**
+- `tests/unit/test_main.py`
+- `tests/unit/test_database_setup.py`
+- `tests/unit/test_prestart.py`
+- `tests/unit/App.test.tsx`
+
+### 4. Executor Agent
+- Runs pytest with coverage
+- Generates HTML and XML reports
+- Collects metrics
+
+**Outputs:**
+- `/app/test_results/report_<timestamp>.html`
+- `/app/coverage/coverage_<timestamp>.xml`
+
+### 5. Repairer Agent (Conditional)
+- Analyzes test failures
+- Suggests fixes via AI
+- Can auto-commit repairs if configured
+
+### 6. CI/CD Agent
+- Generates GitHub Actions workflow
+- Configures test matrix
+- Triggers workflow dispatch (requires valid token)
+
+**Generated File:**
+`.github/workflows/qa_testing.yml`
+
+---
+
+## Output Artifacts
+
+### File Structure
+```
+qa_results/
+├── test_results/
+│   └── report_20260216_001018.html
+├── coverage/
+│   ├── coverage_20260216_001018.xml
+│   └── htmlcov/
+│       └── index.html
+├── logs/
+│   ├── repository_agent.log
+│   ├── inspector_agent.log
+│   ├── generator_agent.log
+│   ├── executor_agent.log
+│   ├── repairer_agent.log
+│   └── cicd_agent.log
+└── generated_tests/
+    └── tests/unit/
+```
+
+### Accessing Reports
+
+#### Docker Volume Mount
 ```bash
-# Run all tests
-pytest
+# View HTML coverage report
+open ./coverage/htmlcov/index.html
 
-# Run only unit tests
-pytest tests/unit/
-
-# Run only E2E tests (make sure your app is running on localhost:8000)
-pytest tests/e2e/
-
-# Run with coverage
-pytest --cov=. --cov-report=html
-
-# View coverage report
-open htmlcov/index.html  # macOS
-# or
-xdg-open htmlcov/index.html  # Linux
+# View pytest report
+open ./results/report_<timestamp>.html
 ```
 
-### Step 9: Commit and Push
-
+#### Inside Container
 ```bash
-git add .github/workflows/qa_testing.yml
-git add pytest.ini
-git add tests/
-git add requirements-dev.txt  # if you created this
-
-git commit -m "Add automated testing infrastructure"
-git push origin main
+docker exec -it <container_id> cat /app/test_results/report_*.html
 ```
 
-### Step 10: Verify GitHub Actions
+---
 
-1. Go to your repository on GitHub
-2. Click the "Actions" tab
-3. You should see "Autonomous QA Testing" workflow
-4. The workflow will run automatically on your next push or PR
+## Common Issues & Troubleshooting
 
-## 🎯 Understanding the Test Structure
+### Issue 1: No Tests Collected
+**Symptom:** `collected 0 tests`
 
+**Causes:**
+1. Generated tests not in pytest discovery path
+2. Import errors in test files
+3. Missing `__init__.py` in test directories
+
+**Fix:**
+```bash
+# Verify test discovery
+docker run --rm your-qa-image pytest --collect-only
+
+# Check imports
+docker run --rm your-qa-image python -c "import tests.unit.test_main"
+
+# Validate pytest config
+docker run --rm your-qa-image cat pytest.ini
 ```
-media-collection-tracker/
-├── .github/
-│   └── workflows/
-│       └── qa_testing.yml          # GitHub Actions workflow
-├── tests/
-│   ├── e2e/
-│   │   ├── conftest.py             # Playwright configuration
-│   │   └── test_media_tracker_e2e.py  # E2E tests
-│   └── unit/
-│       └── test_*.py               # Unit tests (you create these)
-├── pytest.ini                      # Pytest configuration
-└── requirements-dev.txt            # Testing dependencies
+
+### Issue 2: GitHub Workflow Dispatch Failed (401)
+**Symptom:** `401 Unauthorized: invalid GitHub token`
+
+**Fix:**
+```bash
+# Verify token scopes
+curl -H "Authorization: token ${GITHUB_TOKEN}" \
+  https://api.github.com/user
+
+# Regenerate token with correct scopes:
+# - repo (full control)
+# - workflow (update workflows)
 ```
 
-## 🔧 Customization Guide
+### Issue 3: Coverage Report Empty
+**Symptom:** Coverage shows N/A%
 
-### Customizing E2E Tests
+**Fix:**
+```bash
+# Ensure .coveragerc exists
+cat > .coveragerc << EOF
+[run]
+source = backend,database,prestart
+omit = tests/*,venv/*
 
-1. **Find your page elements**:
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError
+EOF
+
+# Run with coverage explicitly
+pytest --cov=backend --cov=database --cov-report=html --cov-report=xml
+```
+
+### Issue 4: Import Errors in Generated Tests
+**Symptom:** `ModuleNotFoundError: No module named 'backend'`
+
+**Fix:**
+```bash
+# Add src to PYTHONPATH
+export PYTHONPATH=/app/repos/media-collection-tracker:$PYTHONPATH
+
+# Or install in editable mode
+pip install -e /app/repos/media-collection-tracker
+```
+
+---
+
+## Advanced Configuration
+
+### Custom Test Generation Patterns
+```python
+# In orchestrator config
+QA_CONFIG = {
+    "generator": {
+        "test_framework": "pytest",
+        "mock_strategy": "unittest.mock",
+        "coverage_threshold": 80,
+        "test_patterns": {
+            "unit": "tests/unit/test_{module}.py",
+            "integration": "tests/integration/test_{module}_integration.py",
+            "e2e": "tests/e2e/test_{feature}_flow.py"
+        }
+    }
+}
+```
+
+### CI/CD Matrix Testing
+Generated workflow includes:
+```yaml
+strategy:
+  matrix:
+    python-version: [3.9, 3.10, 3.11]
+    os: [ubuntu-latest, macos-latest]
+```
+
+### Parallel Execution
+```bash
+# Docker with pytest-xdist
+docker run --rm \
+  -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+  your-qa-image \
+  pytest -n auto tests/
+```
+
+---
+
+## Performance Benchmarks
+
+| Stage | Expected Duration | Memory Usage |
+|-------|------------------|--------------|
+| Repository Clone | 5-10s | ~50MB |
+| Code Analysis | 2-5s | ~100MB |
+| Test Generation | 10-30s | ~200MB |
+| Test Execution | 15-60s | ~300MB |
+| Workflow Generation | 1-3s | ~50MB |
+| **Total** | **~60-120s** | **~500MB peak** |
+
+---
+
+## Security Considerations
+
+1. **Never commit tokens to git**
    ```bash
-   # Start your app
-   python app.py  # or however you run it
-   
-   # Open browser to http://localhost:8000
-   # Inspect elements to find selectors
+   echo ".env" >> .gitignore
+   echo ".github_token" >> .gitignore
    ```
 
-2. **Common selector patterns**:
-   ```python
-   # By ID
-   page.click("#button-id")
-   
-   # By class
-   page.click(".btn-primary")
-   
-   # By text
-   page.click("button:has-text('Submit')")
-   
-   # By attribute
-   page.click("button[name='submit']")
+2. **Use GitHub Actions secrets for CI/CD**
+   ```yaml
+   env:
+     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
    ```
 
-3. **Update base_url** if your app runs on a different port:
-   ```python
-   # In tests/e2e/conftest.py
-   @pytest.fixture
-   def base_url():
-       return "http://localhost:YOUR_PORT"
-   ```
+3. **Rotate tokens regularly**
+   - Set expiration (max 90 days recommended)
+   - Revoke after project completion
 
-### Adding Unit Tests
+4. **Limit token scope**
+   - Only grant required permissions
+   - Use fine-grained tokens when possible
 
-Create a test file for each module:
+---
 
+## Quick Reference Commands
+
+```bash
+# Full cycle (Docker)
+docker run --rm -e GITHUB_TOKEN=$GITHUB_TOKEN \
+  -v $(pwd)/results:/app/test_results \
+  mcp-server-qa-sub-agents:latest 
+  python qa_council_server.py \
+  --repo-url https://github.com/one-repo-to-rule-them-all/media-collection-tracker
+
+# Full cycle (Python)
+python qa_council_server.py \
+  --repo-url https://github.com/one-repo-to-rule-them-all/media-collection-tracker \
+  --branch main
+
+# View logs
+docker logs <container_id>
+
+# Extract results
+docker cp <container_id>:/app/test_results ./results
+docker cp <container_id>:/app/coverage ./coverage
+
+# Cleanup
+docker system prune -a --volumes
+```
+
+---
+
+## Support & Debugging
+
+### Enable Verbose Logging
+```bash
+# Docker
+docker run --rm -e LOG_LEVEL=DEBUG qa-image ...
+
+# Python
+python orchestrator_cli.py --log-level DEBUG ...
+```
+
+### Inspect Generated Tests
+```bash
+# View test file
+docker exec <container_id> cat /app/repos/media-collection-tracker/tests/unit/test_main.py
+
+# Run specific test
+docker exec <container_id> pytest tests/unit/test_main.py::TestMediaAPI::test_health_check -v
+```
+
+### Agent-Specific Execution
 ```python
-# tests/unit/test_database.py
-import pytest
-from your_app import database
+from qa_orchestrator.agents import GeneratorAgent
 
-def test_database_connection():
-    """Test database connects successfully."""
-    db = database.connect()
-    assert db is not None
-
-def test_add_media_item():
-    """Test adding a media item to database."""
-    result = database.add_media("Test Movie", "movie")
-    assert result.id is not None
-    assert result.title == "Test Movie"
+agent = GeneratorAgent()
+agent.generate_tests(
+    repo_path='/app/repos/media-collection-tracker',
+    target_file='backend/main.py'
+)
 ```
 
-### Adjusting Coverage Thresholds
+---
 
-Edit `pytest.ini` to add minimum coverage requirements:
+## Next Steps
 
-```ini
-[coverage:report]
-fail_under = 80  # Fail if coverage is below 80%
+1. **First Run:** Execute full cycle and review generated tests
+2. **Review Reports:** Check coverage thresholds and test quality
+3. **Iterate:** Add custom test patterns or edge cases
+4. **CI Integration:** Enable workflow in GitHub Actions
+5. **Monitor:** Set up alerts for test failures in production
+
+For issues or enhancements, submit to the QA orchestrator repository.
+
+
+
+```bash
+
+$ MSYS_NO_PATHCONV=1 docker run -it   -e GITHUB_TOKEN="${GITHUB_TOKEN}"   -v "$(pwd)/results:/app/test_results"   -v "$(pwd)/coverage:/app/coverage"   mcp-server-qa-sub-agents:latest   /bin/bash
+
+
+ python -c "import qa_agents; print(dir(qa_agents))"
+
+ python -c "
+import asyncio
+import sys
+sys.path.insert(0, '/app')
+from qa_council_server import orchestrate_full_qa_cycle
+
+async def run():
+    result = await orchestrate_full_qa_cycle(
+        repo_url='https://github.com/one-repo-to-rule-them-all/media-collection-tracker',
+        branch='main',
+        base_url=''
+    )
+    print(result)
+
+asyncio.run(run())
+"
 ```
-
-## 🐛 Troubleshooting
-
-### Tests fail with "element not found"
-- Your app might not be running
-- Selectors might have changed
-- Add wait conditions: `page.wait_for_selector("#element")`
-
-### GitHub Actions fails but local tests pass
-- Check if all dependencies are in `requirements.txt`
-- Verify Python version matches in workflow (currently 3.11)
-- Check action logs for specific error messages
-
-### Coverage reports not generating
-- Ensure `pytest-cov` is installed
-- Check that source paths are correct in `pytest.ini`
-
-## 📊 What You Get
-
-Once set up, every push will:
-1. ✅ Run all tests automatically
-2. ✅ Generate coverage reports
-3. ✅ Show test results in PR checks
-4. ✅ Upload HTML reports as artifacts
-5. ✅ Fail the build if tests fail (you can adjust this)
-
-## 🎓 Next Steps
-
-1. **Start with unit tests**: Test your core logic first
-2. **Add E2E tests gradually**: One user flow at a time
-3. **Increase coverage**: Aim for 80%+ coverage
-4. **Review PR checks**: Use them to maintain quality
-
-Need help customizing tests for your specific application? Let me know what features you want to test!
