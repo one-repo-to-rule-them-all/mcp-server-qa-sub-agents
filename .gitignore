@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+report.html
+assets/
+*.log
+
+# Test artifacts
+test_results/
+coverage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+repos/
+
+# MCP
+.mcp/
