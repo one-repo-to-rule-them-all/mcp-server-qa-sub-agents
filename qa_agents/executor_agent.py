@@ -65,18 +65,37 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
         return f"❌ Test execution error: {result.get('error', 'Unknown error')}"
 
     stdout = result.get("stdout", "")
-    summary_match = re.search(r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s", stdout)
-    passed = int(summary_match.group(1) or 0) if summary_match else stdout.count(" passed")
-    failed = int(summary_match.group(2) or 0) if summary_match else stdout.count(" failed")
-    skipped = int(summary_match.group(3) or 0) if summary_match else stdout.count(" skipped")
-    no_tests_collected = "no tests ran" in stdout.lower() or "collected 0 items" in stdout.lower()
+    stderr = result.get("stderr", "")
+    combined_output = f"{stdout}\n{stderr}".strip()
 
-    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", stdout)
+    summary_match = re.search(
+        r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",
+        combined_output,
+    )
+    passed = int(summary_match.group(1) or 0) if summary_match else combined_output.count(" passed")
+    failed = int(summary_match.group(2) or 0) if summary_match else combined_output.count(" failed")
+    skipped = int(summary_match.group(3) or 0) if summary_match else combined_output.count(" skipped")
+    no_tests_collected = "no tests ran" in combined_output.lower() or "collected 0 items" in combined_output.lower()
+
+    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", combined_output)
     coverage_pct = coverage_match.group(1) if coverage_match else "N/A"
 
-    logger.info("Execution summary: passed=%d failed=%d skipped=%d coverage=%s no_tests=%s", passed, failed, skipped, coverage_pct, no_tests_collected)
+    exit_code = result.get("exit_code", 1)
+    has_pytest_errors = bool(re.search(r"(ERRORS?|usage: pytest|ImportError|ModuleNotFoundError)", combined_output))
+    if exit_code != 0 and failed == 0 and has_pytest_errors:
+        failed = 1
 
-    status = "✅" if result.get("exit_code", 1) == 0 and not no_tests_collected else "⚠️"
+    logger.info(
+        "Execution summary: passed=%d failed=%d skipped=%d coverage=%s no_tests=%s exit_code=%s",
+        passed,
+        failed,
+        skipped,
+        coverage_pct,
+        no_tests_collected,
+        exit_code,
+    )
+
+    status = "✅" if exit_code == 0 and not no_tests_collected else "❌" if exit_code != 0 else "⚠️"
     return f"""{status} Test Execution Complete
 
 📊 Results:
@@ -89,5 +108,5 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
 📄 Report: {result.get('report_file')}
 📈 Coverage: {result.get('coverage_file')}
 
-{stdout[:2000]}
+{combined_output[:2000]}
 """
