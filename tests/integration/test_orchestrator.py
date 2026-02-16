@@ -134,6 +134,95 @@ class TestOrchestrateFullQACycle:
         assert "Repair" in result
 
     @pytest.mark.asyncio
+    async def test_self_healing_retries_on_failure(self, tmp_repo):
+        """Orchestrator should retry execute→repair up to 3 times."""
+        from qa_council_server import orchestrate_full_qa_cycle
+
+        repo_path = str(tmp_repo)
+        exec_call_count = 0
+
+        async def mock_execute(**kwargs):
+            nonlocal exec_call_count
+            exec_call_count += 1
+            if exec_call_count < 3:
+                return "⚠️ Test Execution Complete\nPassed: 3\nFAILED test_x.py"
+            return "✅ Test Execution Complete\nPassed: 5"
+
+        with patch(
+            "qa_council_server.clone_repository",
+            new_callable=AsyncMock,
+            return_value=f"✅ Repository ready at: {repo_path}",
+        ), patch(
+            "qa_council_server.analyze_codebase",
+            new_callable=AsyncMock,
+            return_value="📊 Done",
+        ), patch(
+            "qa_council_server.generate_unit_tests",
+            new_callable=AsyncMock,
+            return_value="✅ Generated",
+        ), patch(
+            "qa_council_server.execute_tests",
+            side_effect=mock_execute,
+        ), patch(
+            "qa_council_server.repair_failing_tests",
+            new_callable=AsyncMock,
+            return_value="🔧 Repair applied",
+        ), patch(
+            "qa_council_server.generate_github_workflow",
+            new_callable=AsyncMock,
+            return_value="✅ Workflow",
+        ):
+            result = await orchestrate_full_qa_cycle(
+                repo_url="https://github.com/owner/repo",
+            )
+
+        # Should have run executor 3 times, repair 2 times, then succeeded
+        assert exec_call_count == 3
+        assert "attempt 1/3" in result
+        assert "attempt 2/3" in result
+        assert "attempt 3/3" in result
+        assert "All tests passing" in result
+
+    @pytest.mark.asyncio
+    async def test_self_healing_exhaustion(self, tmp_repo):
+        """Orchestrator should report exhaustion after max retries."""
+        from qa_council_server import orchestrate_full_qa_cycle
+
+        repo_path = str(tmp_repo)
+
+        with patch(
+            "qa_council_server.clone_repository",
+            new_callable=AsyncMock,
+            return_value=f"✅ Repository ready at: {repo_path}",
+        ), patch(
+            "qa_council_server.analyze_codebase",
+            new_callable=AsyncMock,
+            return_value="📊 Done",
+        ), patch(
+            "qa_council_server.generate_unit_tests",
+            new_callable=AsyncMock,
+            return_value="✅ Generated",
+        ), patch(
+            "qa_council_server.execute_tests",
+            new_callable=AsyncMock,
+            return_value="⚠️ Failed: 2\nFAILED test_x.py",
+        ), patch(
+            "qa_council_server.repair_failing_tests",
+            new_callable=AsyncMock,
+            return_value="🔧 Repair attempted",
+        ), patch(
+            "qa_council_server.generate_github_workflow",
+            new_callable=AsyncMock,
+            return_value="✅ Workflow",
+        ):
+            result = await orchestrate_full_qa_cycle(
+                repo_url="https://github.com/owner/repo",
+            )
+
+        assert "exhausted" in result.lower()
+        assert "3 attempts" in result
+
+    @pytest.mark.asyncio
     async def test_discovers_frontend_entrypoint(self, tmp_repo):
         """Orchestrator should auto-detect frontend/src/App.tsx."""
         from qa_council_server import _discover_frontend_entrypoint

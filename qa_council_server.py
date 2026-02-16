@@ -165,22 +165,42 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
         results.extend(["\n🌐 E2E Tests:", e2e_result])
         generated_count += 1
 
-    results.extend(["\n" + "=" * 70, "👤 AGENT 4: EXECUTOR AGENT", "=" * 70])
-    logger.info("Orchestration: starting executor agent")
-    exec_result = await execute_tests(repo_path=repo_path)
-    results.append(exec_result)
+    # ------------------------------------------------------------------
+    # Self-healing loop: Execute → Repair → Re-execute (up to 3 retries)
+    # ------------------------------------------------------------------
+    max_retries = 3
+    final_exec_result = ""
 
-    if "failed" in exec_result.lower() or "❌" in exec_result:
-        results.extend(["\n" + "=" * 70, "👤 AGENT 5: REPAIRER AGENT", "=" * 70])
-        logger.info("Orchestration: starting repair agent due to failures")
-        results.append(await repair_failing_tests(repo_path=repo_path, test_output=exec_result))
+    for attempt in range(1, max_retries + 1):
+        results.extend(["\n" + "=" * 70, f"👤 AGENT 4: EXECUTOR AGENT (attempt {attempt}/{max_retries})", "=" * 70])
+        logger.info("Orchestration: executor attempt %d/%d", attempt, max_retries)
+        exec_result = await execute_tests(repo_path=repo_path)
+        results.append(exec_result)
+        final_exec_result = exec_result
+
+        has_failures = "failed" in exec_result.lower() or "❌" in exec_result
+
+        if not has_failures:
+            results.append(f"\n✅ All tests passing on attempt {attempt}")
+            break
+
+        results.extend(["\n" + "=" * 70, f"👤 AGENT 5: REPAIRER AGENT (attempt {attempt}/{max_retries})", "=" * 70])
+        logger.info("Orchestration: repair attempt %d/%d", attempt, max_retries)
+        repair_result = await repair_failing_tests(repo_path=repo_path, test_output=exec_result)
+        results.append(repair_result)
+
+        if attempt == max_retries:
+            results.append(f"\n⚠️  Self-healing exhausted after {max_retries} attempts")
+            logger.warning("Self-healing exhausted after %d attempts", max_retries)
     else:
-        results.append("\n⏭️  Agent 5 (Repairer) skipped - no failures detected")
+        if "failed" not in final_exec_result.lower() and "❌" not in final_exec_result:
+            results.append("\n⏭️  Agent 5 (Repairer) skipped - no failures detected")
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 6: CI/CD AGENT", "=" * 70])
     logger.info("Orchestration: starting CI/CD agent")
     results.append(await generate_github_workflow(repo_path=repo_path, test_command="pytest --cov=backend --cov-report=xml -v"))
 
+    repair_status = "✅ Repairer Agent - Self-healed" if "failed" in final_exec_result.lower() else "⏭️  Repairer Agent - Skipped (no failures)"
     results.extend(
         [
             "\n" + "=" * 70,
@@ -192,7 +212,7 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
   ✅ Inspector Agent - Codebase analyzed
   ✅ Generator Agent - {generated_count} test suites created
   ✅ Executor Agent - Tests executed with coverage
-  {"✅ Repairer Agent - Failures analyzed" if "failed" in exec_result.lower() else "⏭️  Repairer Agent - Skipped (no failures)"}
+  {repair_status}
   ✅ CI/CD Agent - GitHub Actions workflow generated
 """,
         ]
