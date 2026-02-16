@@ -122,6 +122,7 @@ registry:
       - name: repair_failing_tests
       - name: generate_github_workflow
       - name: create_test_fix_pr
+      - name: generate_council_configuration
       - name: orchestrate_full_qa_cycle
     secrets:
       - name: GITHUB_TOKEN
@@ -196,6 +197,16 @@ qa-council    qa-council-mcp-server:latest    Running
 ## 💼 Usage Guide for Lead QA Engineers
 
 ### Individual Agent Usage
+
+
+#### Agent 7: Council Configuration
+```
+You: "Generate a Council-of-Sub-Agents configuration for this repo"
+
+Claude calls: generate_council_configuration(repo_path="/app/repos/api-service")
+
+Result: .qa-council/council-config.yml + .github/workflows/qa_council_autofix.yml
+```
 
 #### Agent 1: Repository Management
 ```

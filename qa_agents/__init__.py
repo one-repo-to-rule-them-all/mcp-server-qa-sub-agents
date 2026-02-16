@@ -2,6 +2,7 @@
 
 from .analyzer_agent import analyze_codebase
 from .cicd_agent import generate_github_workflow
+from .council_config_agent import generate_council_configuration
 from .executor_agent import execute_tests
 from .generator_agent import generate_e2e_tests, generate_unit_tests
 from .github_pr_agent import create_test_fix_pr
@@ -14,6 +15,7 @@ __all__ = [
     "execute_tests",
     "generate_e2e_tests",
     "generate_github_workflow",
+    "generate_council_configuration",
     "generate_unit_tests",
     "repair_failing_tests",
     "create_test_fix_pr",

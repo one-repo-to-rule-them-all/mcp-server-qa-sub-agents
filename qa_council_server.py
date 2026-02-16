@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 from qa_agents.analyzer_agent import analyze_codebase as analyzer_agent_analyze_codebase
 from qa_agents.cicd_agent import generate_github_workflow as cicd_agent_generate_github_workflow
+from qa_agents.council_config_agent import generate_council_configuration as council_agent_generate_council_configuration
 from qa_agents.executor_agent import execute_tests as executor_agent_execute_tests
 from qa_agents.generator_agent import generate_e2e_tests as generator_agent_generate_e2e_tests
 from qa_agents.generator_agent import generate_unit_tests as generator_agent_generate_unit_tests
@@ -118,6 +119,13 @@ async def create_test_fix_pr(repo_url: str = "", test_output: str = "", fixes: s
     """Create GitHub PR with automated test fixes from QA Council analysis."""
     logger.info("PR Agent: creating test fix PR for %s", repo_url)
     return await github_agent_create_test_fix_pr(repo_url, test_output, fixes, WORKSPACE_DIR)
+
+
+@mcp.tool()
+async def generate_council_configuration(repo_path: str = "") -> str:
+    """Generate Council-of-Sub-Agents config and GitHub AutoFix workflow for the target repo."""
+    logger.info("Council Config Agent: generating council artifacts for %s", repo_path)
+    return await council_agent_generate_council_configuration(repo_path)
 
 
 @mcp.tool()
