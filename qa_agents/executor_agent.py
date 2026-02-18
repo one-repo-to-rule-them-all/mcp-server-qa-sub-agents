@@ -1,10 +1,12 @@
-"""Executor agent for running pytest and summarizing results."""
+"""Executor agent for running discovered test commands and summarizing results."""
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -13,107 +15,164 @@ from .utils import verify_path_exists
 logger = logging.getLogger("qa-council-server.executor-agent")
 
 
-def _extract_pytest_summary(combined_output: str) -> tuple[int, int, int, bool]:
-    """Parse pytest text output into pass/fail/skip totals and collection status."""
-    summary_match = re.search(
-        r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",
-        combined_output,
-    )
-    passed = int(summary_match.group(1) or 0) if summary_match else combined_output.count(" passed")
-    failed = int(summary_match.group(2) or 0) if summary_match else combined_output.count(" failed")
-    skipped = int(summary_match.group(3) or 0) if summary_match else combined_output.count(" skipped")
-    no_tests_collected = "no tests ran" in combined_output.lower() or "collected 0 items" in combined_output.lower()
-    return passed, failed, skipped, no_tests_collected
+@dataclass(frozen=True)
+class TestCommand:
+    """Concrete command invocation for a test runner."""
+
+    kind: str
+    cmd: list[str]
+    fallback_cmd: list[str] | None = None
+    report_file: str = "N/A"
+    coverage_file: str = "N/A"
 
 
-def _run_coverage_fallback(repo_path: str, test_path: str, coverage_file: Path) -> tuple[str, str, str]:
-    """Run tests with coverage.py directly when pytest-cov plugin is unavailable."""
-    cov_run_cmd = ["coverage", "run", "-m", "pytest", "-v", "--tb=short", test_path or repo_path]
-    cov_xml_cmd = ["coverage", "xml", "-o", str(coverage_file)]
-    cov_report_cmd = ["coverage", "report"]
-
-    run_result = subprocess.run(cov_run_cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
-    xml_result = subprocess.run(cov_xml_cmd, cwd=repo_path, capture_output=True, text=True, timeout=120)
-    report_result = subprocess.run(cov_report_cmd, cwd=repo_path, capture_output=True, text=True, timeout=120)
-    coverage_text = f"{report_result.stdout}\n{xml_result.stderr}".strip()
-
-    return (
-        f"{run_result.stdout}\n{run_result.stderr}".strip(),
-        str(coverage_file) if xml_result.returncode == 0 else "N/A (coverage xml generation failed)",
-        coverage_text,
-    )
+def _load_package_json(repo: Path) -> dict:
+    package_json = repo / "package.json"
+    if not package_json.exists():
+        return {}
+    try:
+        return json.loads(package_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
-def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> tuple[bool, dict]:
-    """Run pytest and collect key report paths for downstream agent summaries."""
+def _discover_test_command(repo: Path, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> TestCommand:
+    """Discover a suitable test command based on repository contents."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_file = test_results_dir / f"report_{timestamp}.html"
     coverage_file = coverage_dir / f"coverage_{timestamp}.xml"
+    package_json = _load_package_json(repo)
+    deps = {
+        **package_json.get("dependencies", {}),
+        **package_json.get("devDependencies", {}),
+    }
 
-    cmd = [
-        "pytest",
-        "-v",
-        "--tb=short",
-        f"--html={report_file}",
-        "--self-contained-html",
-        f"--cov={repo_path}",
-        f"--cov-report=xml:{coverage_file}",
-        "--cov-report=term",
-        test_path or repo_path,
+    pytest_markers = [repo / "pytest.ini", repo / "pyproject.toml", repo / "tox.ini"]
+    has_pytest_markers = any(marker.exists() for marker in pytest_markers)
+    has_python_tests = any(repo.glob("tests/**/*.py")) or any(repo.glob("test_*.py"))
+
+    if has_pytest_markers or has_python_tests:
+        return TestCommand(
+            kind="pytest",
+            cmd=[
+                "pytest",
+                "-v",
+                "--tb=short",
+                f"--html={report_file}",
+                "--self-contained-html",
+                f"--cov={test_path or str(repo)}",
+                f"--cov-report=xml:{coverage_file}",
+                "--cov-report=term",
+                test_path or str(repo),
+            ],
+            fallback_cmd=["pytest", "-v", "--tb=short", test_path or str(repo)],
+            report_file=str(report_file),
+            coverage_file=str(coverage_file),
+        )
+
+    if (repo / "package.json").exists() and "vitest" in deps:
+        return TestCommand(kind="vitest", cmd=["npm", "run", "test", "--", "--run"], fallback_cmd=["npm", "test"])
+
+    if (repo / "package.json").exists() and "jest" in deps:
+        return TestCommand(kind="jest", cmd=["npm", "test", "--", "--runInBand"], fallback_cmd=["npm", "test"])
+
+    if has_python_tests or any(repo.rglob("*.py")):
+        return TestCommand(kind="unittest", cmd=["python", "-m", "unittest", "discover", "-v", test_path or "tests"])
+
+    return TestCommand(kind="default", cmd=["pytest", "-v", "--tb=short", test_path or str(repo)])
+
+
+def _extract_test_summary(output: str) -> tuple[int, int, int, bool]:
+    """Best-effort extraction of test summary across common frameworks."""
+    patterns = [
+        r"(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",  # pytest-like
+        r"Tests:\s*(?:\d+\s+total,\s*)?(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?",  # jest-like
     ]
-    logger.info("Executing pytest command: %s", " ".join(cmd))
+    passed = failed = skipped = 0
+    for pattern in patterns:
+        match = re.search(pattern, output, re.IGNORECASE)
+        if match:
+            passed = int((match.group(1) or "0"))
+            failed = int((match.group(2) or "0"))
+            skipped = int((match.group(3) or "0"))
+            break
 
-    fallback_cmd = ["pytest", "-v", "--tb=short", test_path or repo_path]
+    if not any((passed, failed, skipped)):
+        passed = len(re.findall(r"\bPASSED\b|\bpass(?:ed|ing)?\b", output, flags=re.IGNORECASE))
+        failed = len(re.findall(r"\bFAILED\b|\bfail(?:ed|ing)?\b", output, flags=re.IGNORECASE))
+        skipped = len(re.findall(r"\bSKIPPED\b|\bskip(?:ped|ping)?\b", output, flags=re.IGNORECASE))
+
+    lowered = output.lower()
+    no_tests_collected = any(
+        marker in lowered for marker in ("no tests ran", "collected 0 items", "no test files found", "0 passing")
+    )
+    return passed, failed, skipped, no_tests_collected
+
+
+def _extract_coverage_pct(output: str) -> str:
+    """Best-effort extraction of coverage percentage from mixed runner output."""
+    patterns = [
+        r"TOTAL\s+\d+\s+\d+\s+(\d+)%",  # coverage.py
+        r"All files\s*\|[^\n]*\|(\s*\d+(?:\.\d+)?)",  # nyc/jest table
+        r"coverage[:\s]+(\d+(?:\.\d+)?)%",  # generic
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, output, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return "N/A"
+
+
+def _run_command(cmd: list[str], cwd: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def _run_tests(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> tuple[bool, dict]:
+    """Run detected tests and collect report metadata."""
+    test_results_dir.mkdir(parents=True, exist_ok=True)
+    coverage_dir.mkdir(parents=True, exist_ok=True)
+
+    repo = Path(repo_path)
+    selected = _discover_test_command(repo, test_results_dir, coverage_dir, test_path)
+    logger.info("Executing %s command: %s", selected.kind, " ".join(selected.cmd))
 
     try:
-        result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
-        combined_output = f"{result.stdout}\n{result.stderr}"
+        primary = _run_command(selected.cmd, repo_path)
+        combined = f"{primary.stdout}\n{primary.stderr}"
 
-        if "unrecognized arguments:" in combined_output:
-            logger.warning(
-                "Pytest options unsupported in current environment; retrying with fallback command: %s",
-                " ".join(fallback_cmd),
-            )
-            fallback_result = subprocess.run(fallback_cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
-            logger.info("Fallback pytest finished with exit code %s", fallback_result.returncode)
-
-            coverage_output, coverage_path, coverage_report_text = "", "N/A (pytest-cov plugin unavailable)", ""
-            try:
-                coverage_output, coverage_path, coverage_report_text = _run_coverage_fallback(
-                    repo_path,
-                    test_path,
-                    coverage_file,
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError) as coverage_error:
-                logger.warning("Coverage fallback unavailable: %s", coverage_error)
-
+        plugin_option_error = "unrecognized arguments:" in combined or "Unknown option" in combined
+        if primary.returncode != 0 and plugin_option_error and selected.fallback_cmd:
+            logger.warning("Primary command options unsupported; retrying fallback command: %s", " ".join(selected.fallback_cmd))
+            fallback = _run_command(selected.fallback_cmd, repo_path)
             return True, {
-                "exit_code": fallback_result.returncode,
-                "stdout": fallback_result.stdout,
-                "stderr": fallback_result.stderr,
-                "report_file": "N/A (pytest-html plugin unavailable)",
-                "coverage_file": coverage_path,
-                "coverage_output": coverage_report_text,
-                "fallback_stdout": coverage_output,
+                "runner": selected.kind,
+                "exit_code": fallback.returncode,
+                "stdout": fallback.stdout,
+                "stderr": fallback.stderr,
+                "report_file": "N/A (runner does not support html output in fallback mode)",
+                "coverage_file": "N/A (runner does not support native coverage in fallback mode)",
                 "used_fallback": True,
             }
 
-        logger.info("Pytest finished with exit code %s", result.returncode)
         return True, {
-            "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "report_file": str(report_file),
-            "coverage_file": str(coverage_file),
+            "runner": selected.kind,
+            "exit_code": primary.returncode,
+            "stdout": primary.stdout,
+            "stderr": primary.stderr,
+            "report_file": selected.report_file,
+            "coverage_file": selected.coverage_file,
             "used_fallback": False,
         }
     except subprocess.TimeoutExpired:
-        logger.error("Pytest execution timed out after 300 seconds")
+        logger.error("Test execution timed out after 300 seconds")
         return False, {"error": "Test execution timed out"}
+    except FileNotFoundError as cmd_error:
+        logger.error("Test command not found: %s", cmd_error)
+        return False, {"error": f"Missing test command: {cmd_error}"}
 
 
 async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> str:
-    """Execute pytest tests with coverage reporting."""
+    """Execute discovered tests and summarize outcomes."""
     logger.info("Starting test execution: repo_path=%s, test_path=%s", repo_path, test_path or "<all>")
 
     if not repo_path.strip():
@@ -125,27 +184,21 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
         logger.warning("Test execution aborted: invalid repository path (%s)", verified_path)
         return f"❌ Error: {verified_path}"
 
-    success, result = _run_pytest(verified_path, test_results_dir, coverage_dir, test_path)
+    success, result = _run_tests(verified_path, test_results_dir, coverage_dir, test_path)
     if not success:
         return f"❌ Test execution error: {result.get('error', 'Unknown error')}"
 
-    stdout = result.get("stdout", "")
-    stderr = result.get("stderr", "")
-    combined_output = f"{stdout}\n{stderr}".strip()
-
-    passed, failed, skipped, no_tests_collected = _extract_pytest_summary(combined_output)
-
-    coverage_source = f"{combined_output}\n{result.get('coverage_output', '')}".strip()
-    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", coverage_source)
-    coverage_pct = coverage_match.group(1) if coverage_match else "N/A"
+    combined_output = f"{result.get('stdout', '')}\n{result.get('stderr', '')}".strip()
+    passed, failed, skipped, no_tests_collected = _extract_test_summary(combined_output)
+    coverage_pct = _extract_coverage_pct(combined_output)
 
     exit_code = result.get("exit_code", 1)
-    has_pytest_errors = bool(re.search(r"(ERRORS?|usage: pytest|ImportError|ModuleNotFoundError)", combined_output))
-    if exit_code != 0 and failed == 0 and has_pytest_errors:
+    if exit_code != 0 and failed == 0 and re.search(r"\berror\b|exception|traceback", combined_output, re.IGNORECASE):
         failed = 1
 
     logger.info(
-        "Execution summary: passed=%d failed=%d skipped=%d coverage=%s no_tests=%s exit_code=%s",
+        "Execution summary: runner=%s passed=%d failed=%d skipped=%d coverage=%s no_tests=%s exit_code=%s",
+        result.get("runner", "unknown"),
         passed,
         failed,
         skipped,
@@ -155,10 +208,12 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
     )
 
     status = "✅" if exit_code == 0 and not no_tests_collected else "❌" if exit_code != 0 else "⚠️"
-    fallback_note = "\n⚠️ Fallback mode used (pytest-html/pytest-cov options unavailable).\n" if result.get("used_fallback") else ""
+    fallback_note = "\n⚠️ Fallback mode used due to unsupported options for the detected runner.\n" if result.get("used_fallback") else ""
+
     return f"""{status} Test Execution Complete
 
 📊 Results:
+- Runner: {result.get('runner', 'unknown')}
 - Passed: {passed}
 - Failed: {failed}
 - Skipped: {skipped}
