@@ -1,4 +1,7 @@
-"""Repository agent for cloning/updating target repositories."""
+"""Repository agent.
+
+Handles repository clone/update operations used by the QA pipeline.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +26,7 @@ async def clone_repository(repo_url: str, branch: str, workspace_dir: Path) -> s
     repo_path = workspace_dir / repo_name
 
     try:
+        # Pull if the repository already exists locally; otherwise clone fresh.
         if repo_path.exists():
             logger.info("Updating existing repository at %s", repo_path)
             result = subprocess.run(

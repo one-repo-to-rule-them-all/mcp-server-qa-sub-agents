@@ -1,4 +1,7 @@
-"""Analyzer agent for codebase structure discovery."""
+"""Analyzer agent.
+
+Provides repository surface discovery that informs generator and execution agents.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ EXCLUDED_PARTS = {".git", "__pycache__", ".venv", "venv", "node_modules"}
 
 def discover_unit_test_targets(repo: Path) -> list[str]:
     """Return generator targets discovered during analysis (python + frontend entrypoint)."""
+    # Collect first-party Python files while skipping test and virtual-env folders.
     py_targets = sorted(
         str(path.relative_to(repo))
         for path in repo.rglob("*.py")
@@ -34,6 +38,7 @@ def discover_unit_test_targets(repo: Path) -> list[str]:
         "frontend/src/app.ts",
         "frontend/src/app.js",
     ]
+    # Add exactly one frontend app entrypoint when present.
     for candidate in frontend_candidates:
         if (repo / candidate).exists():
             py_targets.append(candidate)

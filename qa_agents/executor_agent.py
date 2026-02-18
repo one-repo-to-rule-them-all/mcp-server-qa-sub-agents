@@ -1,4 +1,7 @@
-"""Executor agent for running discovered test commands and summarizing results."""
+"""Executor agent.
+
+Runs discovered test commands and summarizes outcomes for the orchestrator.
+"""
 
 from __future__ import annotations
 
@@ -124,6 +127,7 @@ def _extract_coverage_pct(output: str) -> str:
 
 
 def _run_command(cmd: list[str], cwd: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+    # Keep command execution centralized for easier timeout/error handling.
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
