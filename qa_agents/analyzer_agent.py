@@ -1,10 +1,12 @@
-"""Analyzer agent for codebase structure discovery."""
+"""Inspector/Analyst agents for codebase discovery and manifests."""
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
+from .audit_schema import TechStackManifest
 from .utils import analyze_python_file, verify_path_exists
 
 logger = logging.getLogger("qa-council-server.analyzer-agent")
@@ -42,6 +44,79 @@ def discover_unit_test_targets(repo: Path) -> list[str]:
     return py_targets
 
 
+def discover_tech_stack_manifest(repo: Path) -> TechStackManifest:
+    """Infer a TechStackManifest from common repository markers."""
+    backend_lang = "unknown"
+    if any(repo.rglob("*.py")):
+        backend_lang = "python/pytest"
+    elif any(repo.rglob("*.java")):
+        backend_lang = "java/junit"
+
+    frontend_framework = "none"
+    if (repo / "package.json").exists():
+        package_text = (repo / "package.json").read_text(encoding="utf-8", errors="ignore").lower()
+        if "react" in package_text:
+            frontend_framework = "react"
+        elif "vue" in package_text:
+            frontend_framework = "vue"
+        else:
+            frontend_framework = "javascript"
+
+    db_type = "unknown"
+    for marker, value in (("postgres", "postgres"), ("mysql", "mysql"), ("sqlite", "sqlite"), ("mongodb", "mongodb")):
+        if any(marker in path.name.lower() for path in repo.rglob("*")):
+            db_type = value
+            break
+
+    auth_mechanism = "unknown"
+    for marker, value in (("jwt", "jwt"), ("oauth", "oauth"), ("session", "session-cookie"), ("auth", "token-based")):
+        if any(marker in str(path).lower() for path in repo.rglob("*.py")):
+            auth_mechanism = value
+            break
+
+    harness = "pytest"
+    if backend_lang.startswith("java"):
+        harness = "junit + playwright-java"
+    elif frontend_framework == "react":
+        harness = "pytest + pytest-playwright + rtl/vitest"
+
+    return TechStackManifest(
+        backend_lang=backend_lang,
+        frontend_framework=frontend_framework,
+        db_type=db_type,
+        auth_mechanism=auth_mechanism,
+        recommended_test_harness=harness,
+    )
+
+
+def discover_testable_surfaces(repo: Path) -> dict:
+    """Discover high-value testable surfaces via lightweight AST inspection."""
+    api_endpoints: list[str] = []
+    ui_components: list[str] = []
+    logic_flows: list[str] = []
+
+    for py_file in repo.rglob("*.py"):
+        if EXCLUDED_PARTS.intersection(py_file.parts) or "tests" in py_file.parts:
+            continue
+        analysis = analyze_python_file(str(py_file))
+        if "error" in analysis:
+            continue
+        relative = str(py_file.relative_to(repo))
+        api_endpoints.extend([f"{relative}:{func['name']}" for func in analysis.get("functions", []) if func["name"].startswith(("get_", "post_", "put_", "delete_"))])
+        logic_flows.extend([f"{relative}:{func['name']}" for func in analysis.get("functions", []) if not func["name"].startswith("_")])
+
+    for component in repo.rglob("*.tsx"):
+        if EXCLUDED_PARTS.intersection(component.parts):
+            continue
+        ui_components.append(str(component.relative_to(repo)))
+
+    return {
+        "api_endpoints": sorted(set(api_endpoints))[:100],
+        "ui_components": sorted(set(ui_components))[:100],
+        "logic_flows": sorted(set(logic_flows))[:200],
+    }
+
+
 async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
     """Analyze Python codebase structure and identify testable components."""
     logger.info("Starting codebase analysis: repo_path=%s, pattern=%s", repo_path, file_pattern)
@@ -50,7 +125,6 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
         logger.warning("Analysis aborted: repository path was empty")
         return "❌ Error: Repository path is required"
 
-    # Validate path before scanning the repository tree.
     path_exists, verified_path = verify_path_exists(repo_path)
     if not path_exists:
         logger.warning("Analysis aborted: invalid repository path (%s)", verified_path)
@@ -75,7 +149,8 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
         logger.info("No files matched pattern during analysis: %s", file_pattern)
         return f"⚠️ No Python files found matching pattern: {file_pattern}"
 
-    logger.info("Found %d candidate Python files for analysis", len(py_files))
+    manifest = discover_tech_stack_manifest(repo)
+    surfaces = discover_testable_surfaces(repo)
 
     analysis = {"total_files": len(py_files), "files": []}
     for py_file in py_files[:50]:
@@ -85,32 +160,14 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
 
     total_functions = sum(len(f.get("functions", [])) for f in analysis["files"])
     total_classes = sum(len(f.get("classes", [])) for f in analysis["files"])
-    logger.info(
-        "Analysis complete: files=%d, functions=%d, classes=%d",
-        analysis["total_files"],
-        total_functions,
-        total_classes,
-    )
-
     recommended_targets = discover_unit_test_targets(repo)
 
-    result = f"""📊 Codebase Analysis Complete
-
-📁 Files analyzed: {analysis['total_files']}
-⚡ Functions found: {total_functions}
-🏗️ Classes found: {total_classes}
-
-Top files for testing:
-"""
-
-    for i, file_info in enumerate(analysis["files"][:10], 1):
-        if "error" not in file_info:
-            result += f"\n{i}. {file_info['path']}"
-            result += f"\n   - Functions: {len(file_info['functions'])}"
-            result += f"\n   - Classes: {len(file_info['classes'])}"
-
-    result += "\n\n🎯 Recommended unit test targets:"
-    for target in recommended_targets:
-        result += f"\n- {target}"
-
-    return result
+    return (
+        "📊 Codebase Analysis Complete\n\n"
+        f"📁 Files analyzed: {analysis['total_files']}\n"
+        f"⚡ Functions found: {total_functions}\n"
+        f"🏗️ Classes found: {total_classes}\n"
+        f"\n🧭 TechStackManifest:\n{json.dumps(manifest.__dict__, indent=2)}\n"
+        f"\n🗺️ Testable Surfaces:\n{json.dumps(surfaces, indent=2)}\n"
+        f"\n🎯 Recommended unit test targets:\n" + "\n".join(f"- {target}" for target in recommended_targets)
+    )

@@ -30,8 +30,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Copy the server code
-COPY qa_council_server.py .
+# Copy application source
+COPY . .
 
 # Create non-root user
 RUN useradd -m -u 1000 mcpuser && \
