@@ -19,7 +19,8 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -v "$(pwd)/results:/app/test_results" \
   -v "$(pwd)/coverage:/app/coverage" \
   mcp-server-qa-sub-agents:latest \
-  python3 -c "
+  /bin/bash 
+  python -c "
 import asyncio
 import sys
 import os
