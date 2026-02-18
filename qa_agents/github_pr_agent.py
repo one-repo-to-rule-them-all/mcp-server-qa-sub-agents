@@ -88,17 +88,31 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
             file_path.write_text(fix["content"], encoding="utf-8")
 
         subprocess.run(["git", "-C", repo_path, "add", "."], check=True, timeout=10)
+
+        diff_check = subprocess.run(
+            ["git", "-C", repo_path, "diff", "--cached", "--quiet"],
+            timeout=10,
+        )
+        if diff_check.returncode == 0:
+            logger.info("No staged changes detected after applying fixes; skipping commit/push")
+            return True, "no_changes"
+
         subprocess.run(
             ["git", "-C", repo_path, "commit", "-m", "fix: Apply automated test repairs from QA Council"],
             check=True,
             timeout=10,
         )
-        subprocess.run(
+
+        push = subprocess.run(
             ["git", "-C", repo_path, "push", "-u", "origin", branch_name],
             capture_output=True,
             text=True,
             timeout=30,
         )
+        if push.returncode != 0:
+            logger.error("Failed pushing branch: %s", push.stderr)
+            return False, f"Failed to push branch: {push.stderr}"
+
         logger.info("Created and pushed test-fix branch successfully: %s", branch_name)
         return True, branch_name
     except Exception as exc:  # pragma: no cover - git/runtime guard
@@ -138,6 +152,9 @@ async def create_test_fix_pr(repo_url: str, test_output: str, fixes: str, worksp
         success, branch_result = await _create_test_fix_branch(repo_path, branch_name, fix_list)
         if not success:
             return f"❌ Failed to create fix branch: {branch_result}"
+        if branch_result == "no_changes":
+            logger.info("No code changes detected from generated fixes; skipping PR creation")
+            return "⚠️ No code changes were produced by generated fixes, so no PR was created."
 
     pr_title = "🤖 Automated Test Fixes from QA Council"
     pr_body = f"""## 🤖 Automated Test Repair Analysis

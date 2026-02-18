@@ -27,6 +27,15 @@ def _parse_test_failures(pytest_output: str) -> list[dict]:
             else:
                 current_failure.setdefault("lines", []).append(line)
 
+    if failures:
+        return failures
+
+    lowered = pytest_output.lower()
+    if "usage: pytest" in lowered or "unrecognized arguments:" in lowered:
+        return [{"test": "pytest invocation error", "lines": ["Pytest command includes unsupported options/plugins"]}]
+    if "importerror" in lowered or "modulenotfounderror" in lowered:
+        return [{"test": "test environment import error", "lines": ["One or more modules could not be imported"]}]
+
     return failures
 
 
@@ -45,6 +54,9 @@ def _generate_test_repair(failure_info: dict) -> list[str]:
         suggestions.append("Ensure all required modules are installed and import paths are correct")
     if "fixture" in failure_text.lower():
         suggestions.append("Verify pytest fixtures are properly defined and scoped")
+    if "unsupported options/plugins" in failure_text:
+        suggestions.append("Install pytest plugins used by the command (e.g., pytest-cov, pytest-html)")
+        suggestions.append("Or rerun pytest without --cov/--html flags when plugins are unavailable")
 
     return suggestions or ["Review test logic and ensure it matches current implementation"]
 
