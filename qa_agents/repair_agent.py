@@ -15,17 +15,24 @@ def _parse_test_failures(pytest_output: str) -> list[dict]:
     in_failure = False
 
     for line in lines:
-        if line.startswith("FAILED"):
+        stripped = line.strip()
+        if stripped.startswith("FAILED") or " FAILED" in stripped:
             in_failure = True
-            current_failure = {"test": line.split()[0], "lines": []}
+            test_name = stripped.split()[0]
+            if "::" in stripped:
+                test_name = stripped.split()[0]
+            current_failure = {"test": test_name, "lines": [stripped]}
         elif in_failure:
-            if line.startswith(("===", "PASSED", "FAILED")):
+            if stripped.startswith(("===", "PASSED", "FAILED")):
                 if current_failure.get("lines"):
                     failures.append(current_failure)
                 current_failure = {}
                 in_failure = False
             else:
-                current_failure.setdefault("lines", []).append(line)
+                current_failure.setdefault("lines", []).append(stripped)
+
+    if current_failure.get("lines"):
+        failures.append(current_failure)
 
     if failures:
         return failures
