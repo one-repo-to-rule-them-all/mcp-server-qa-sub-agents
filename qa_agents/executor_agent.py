@@ -32,8 +32,28 @@ def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test
     ]
     logger.info("Executing pytest command: %s", " ".join(cmd))
 
+    fallback_cmd = ["pytest", "-v", "--tb=short", test_path or repo_path]
+
     try:
         result = subprocess.run(cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
+        combined_output = f"{result.stdout}\n{result.stderr}"
+
+        if "unrecognized arguments:" in combined_output:
+            logger.warning(
+                "Pytest options unsupported in current environment; retrying with fallback command: %s",
+                " ".join(fallback_cmd),
+            )
+            fallback_result = subprocess.run(fallback_cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
+            logger.info("Fallback pytest finished with exit code %s", fallback_result.returncode)
+            return True, {
+                "exit_code": fallback_result.returncode,
+                "stdout": fallback_result.stdout,
+                "stderr": fallback_result.stderr,
+                "report_file": "N/A (pytest-html plugin unavailable)",
+                "coverage_file": "N/A (pytest-cov plugin unavailable)",
+                "used_fallback": True,
+            }
+
         logger.info("Pytest finished with exit code %s", result.returncode)
         return True, {
             "exit_code": result.returncode,
@@ -41,6 +61,7 @@ def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test
             "stderr": result.stderr,
             "report_file": str(report_file),
             "coverage_file": str(coverage_file),
+            "used_fallback": False,
         }
     except subprocess.TimeoutExpired:
         logger.error("Pytest execution timed out after 300 seconds")
@@ -96,6 +117,7 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
     )
 
     status = "✅" if exit_code == 0 and not no_tests_collected else "❌" if exit_code != 0 else "⚠️"
+    fallback_note = "\n⚠️ Fallback mode used (pytest-html/pytest-cov options unavailable).\n" if result.get("used_fallback") else ""
     return f"""{status} Test Execution Complete
 
 📊 Results:
@@ -107,6 +129,7 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
 
 📄 Report: {result.get('report_file')}
 📈 Coverage: {result.get('coverage_file')}
+{fallback_note}
 
 {combined_output[:2000]}
 """
