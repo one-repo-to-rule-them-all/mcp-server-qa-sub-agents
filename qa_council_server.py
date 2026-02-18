@@ -25,9 +25,11 @@ from qa_agents.github_pr_agent import create_test_fix_pr as github_agent_create_
 from qa_agents.repair_agent import repair_failing_tests as repair_agent_repair_failing_tests
 from qa_agents.repository_agent import clone_repository as repository_agent_clone_repository
 from qa_agents.utils import configure_json_logging, get_directory_from_env
-from loguru import logger
+
+import logging
 
 configure_json_logging()
+logger = logging.getLogger("qa-council-server")
 
 mcp = FastMCP("qa-council")
 
