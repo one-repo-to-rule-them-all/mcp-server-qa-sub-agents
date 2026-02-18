@@ -1,4 +1,7 @@
-"""Generator agent for unit and E2E test generation."""
+"""Generator agent.
+
+Builds deterministic test scaffolds for Python and React projects.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +16,13 @@ REACT_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
 
 
 def _build_module_import(target_file: str) -> str:
+    # Convert a file path into an import path (foo/bar.py -> foo.bar).
     module_path = Path(target_file).with_suffix("")
     return ".".join(module_path.parts)
 
 
 def _default_value_for_arg(arg_name: str) -> str:
+    # Use stable defaults to keep generated tests deterministic.
     lowered = arg_name.lower()
     if any(key in lowered for key in ("id", "count", "size", "limit", "port")):
         return "1"

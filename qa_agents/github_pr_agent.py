@@ -1,19 +1,26 @@
-"""Agent for creating test-fix branches and GitHub pull requests."""
+"""GitHub PR agent.
+
+This module creates fix branches and pull requests for generated QA repairs.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import httpx
 
-from .utils import sanitize_repo_name
+from .utils import get_github_token, sanitize_repo_name
 
 logger = logging.getLogger("qa-council-server.github-pr-agent")
+
+
+# Default Git identity used when the environment does not provide one.
+_DEFAULT_GIT_USER_NAME = "QA Council Bot"
+_DEFAULT_GIT_USER_EMAIL = "qa-council-bot@users.noreply.github.com"
 
 
 def _extract_github_info(repo_url: str) -> tuple[str | None, str | None]:
@@ -35,7 +42,7 @@ async def _create_github_pr(
     base_branch: str = "main",
 ) -> tuple[bool, str]:
     """Call GitHub API to open a pull request for generated fixes."""
-    github_token = os.environ.get("GITHUB_TOKEN", "")
+    github_token = get_github_token()
     if not github_token:
         return False, "GitHub token not configured"
 
@@ -87,6 +94,7 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(fix["content"], encoding="utf-8")
 
+        # Stage all generated repair files before diff/commit checks.
         subprocess.run(["git", "-C", repo_path, "add", "."], check=True, timeout=10)
 
         diff_check = subprocess.run(
@@ -96,6 +104,8 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
         if diff_check.returncode == 0:
             logger.info("No staged changes detected after applying fixes; skipping commit/push")
             return True, "no_changes"
+
+        _ensure_local_git_identity(repo_path)
 
         subprocess.run(
             ["git", "-C", repo_path, "commit", "-m", "fix: Apply automated test repairs from QA Council"],
@@ -120,6 +130,36 @@ async def _create_test_fix_branch(repo_path: str, branch_name: str, fixes: list[
         return False, f"Error creating fix branch: {exc}"
 
 
+def _ensure_local_git_identity(repo_path: str) -> None:
+    """Ensure repository-local git identity exists so non-interactive commits can succeed."""
+    configured_name = subprocess.run(
+        ["git", "-C", repo_path, "config", "--get", "user.name"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    configured_email = subprocess.run(
+        ["git", "-C", repo_path, "config", "--get", "user.email"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    # Configure only missing fields to avoid overriding repository-specific settings.
+    if configured_name.returncode != 0 or not configured_name.stdout.strip():
+        subprocess.run(
+            ["git", "-C", repo_path, "config", "user.name", _DEFAULT_GIT_USER_NAME],
+            check=True,
+            timeout=10,
+        )
+    if configured_email.returncode != 0 or not configured_email.stdout.strip():
+        subprocess.run(
+            ["git", "-C", repo_path, "config", "user.email", _DEFAULT_GIT_USER_EMAIL],
+            check=True,
+            timeout=10,
+        )
+
+
 async def create_test_fix_pr(repo_url: str, test_output: str, fixes: str, workspace_dir: Path) -> str:
     """Create GitHub PR with automated test fixes from QA Council analysis."""
     logger.info("Starting PR creation flow for repo URL: %s", repo_url)
@@ -133,9 +173,9 @@ async def create_test_fix_pr(repo_url: str, test_output: str, fixes: str, worksp
         logger.warning("PR creation aborted: invalid GitHub URL (%s)", repo_url)
         return "❌ Error: Invalid GitHub repository URL"
 
-    if not os.environ.get("GITHUB_TOKEN", ""):
-        logger.warning("PR creation aborted: GITHUB_TOKEN is not configured")
-        return "❌ Error: GITHUB_TOKEN not configured. Set it as an environment variable."
+    if not get_github_token():
+        logger.warning("PR creation aborted: no GitHub token was configured")
+        return "❌ Error: GitHub token not configured. Set GITHUB_TOKEN (or GH_TOKEN/GITHUB_PAT)."
 
     repo_name = sanitize_repo_name(repo_url)
     repo_path = str(workspace_dir / repo_name)

@@ -1,4 +1,7 @@
-"""Repair agent for parsing failures and suggesting fixes."""
+"""Repair agent.
+
+Parses failed test output and returns actionable remediation suggestions.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +17,7 @@ def _parse_test_failures(pytest_output: str) -> list[dict]:
     current_failure = {}
     in_failure = False
 
+    # Track contiguous failure blocks emitted by pytest.
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("FAILED") or " FAILED" in stripped:
