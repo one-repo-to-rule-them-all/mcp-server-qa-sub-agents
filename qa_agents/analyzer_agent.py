@@ -9,6 +9,38 @@ from .utils import analyze_python_file, verify_path_exists
 
 logger = logging.getLogger("qa-council-server.analyzer-agent")
 
+EXCLUDED_PARTS = {".git", "__pycache__", ".venv", "venv", "node_modules"}
+
+
+def discover_unit_test_targets(repo: Path) -> list[str]:
+    """Return generator targets discovered during analysis (python + frontend entrypoint)."""
+    py_targets = sorted(
+        str(path.relative_to(repo))
+        for path in repo.rglob("*.py")
+        if not EXCLUDED_PARTS.intersection(path.parts)
+        and "tests" not in path.parts
+        and not path.name.endswith("_test.py")
+        and not path.name.startswith("test_")
+        and path.name != "__init__.py"
+    )
+
+    frontend_candidates = [
+        "frontend/src/App.tsx",
+        "frontend/src/App.jsx",
+        "frontend/src/App.ts",
+        "frontend/src/App.js",
+        "frontend/src/app.tsx",
+        "frontend/src/app.jsx",
+        "frontend/src/app.ts",
+        "frontend/src/app.js",
+    ]
+    for candidate in frontend_candidates:
+        if (repo / candidate).exists():
+            py_targets.append(candidate)
+            break
+
+    return py_targets
+
 
 async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
     """Analyze Python codebase structure and identify testable components."""
@@ -30,11 +62,10 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
         return f"❌ Error: Invalid repository path: {verified_path}"
 
     py_files = list(repo.rglob(file_pattern))
-    excluded_parts = {".git", "__pycache__", ".venv", "venv", "node_modules"}
     py_files = [
         f
         for f in py_files
-        if not excluded_parts.intersection(f.parts)
+        if not EXCLUDED_PARTS.intersection(f.parts)
         and not f.name.startswith("test_")
         and not f.name.endswith("_test.py")
         and "tests" not in f.parts
@@ -61,6 +92,8 @@ async def analyze_codebase(repo_path: str, file_pattern: str = "*.py") -> str:
         total_classes,
     )
 
+    recommended_targets = discover_unit_test_targets(repo)
+
     result = f"""📊 Codebase Analysis Complete
 
 📁 Files analyzed: {analysis['total_files']}
@@ -75,5 +108,9 @@ Top files for testing:
             result += f"\n{i}. {file_info['path']}"
             result += f"\n   - Functions: {len(file_info['functions'])}"
             result += f"\n   - Classes: {len(file_info['classes'])}"
+
+    result += "\n\n🎯 Recommended unit test targets:"
+    for target in recommended_targets:
+        result += f"\n- {target}"
 
     return result

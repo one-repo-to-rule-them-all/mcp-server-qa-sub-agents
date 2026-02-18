@@ -13,6 +13,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from qa_agents.analyzer_agent import analyze_codebase as analyzer_agent_analyze_codebase
+from qa_agents.analyzer_agent import discover_unit_test_targets as analyzer_agent_discover_unit_test_targets
 from qa_agents.cicd_agent import generate_github_workflow as cicd_agent_generate_github_workflow
 from qa_agents.executor_agent import execute_tests as executor_agent_execute_tests
 from qa_agents.generator_agent import generate_e2e_tests as generator_agent_generate_e2e_tests
@@ -42,45 +43,6 @@ class GeneratedArtifact:
 
     relative_path: str
     description: str
-
-
-def _discover_frontend_entrypoint(repo_path: str) -> str | None:
-    """Return the first matching frontend app entrypoint if present."""
-    repo = Path(repo_path)
-    candidates = [
-        "frontend/src/App.tsx",
-        "frontend/src/App.jsx",
-        "frontend/src/App.ts",
-        "frontend/src/App.js",
-        "frontend/src/app.tsx",
-        "frontend/src/app.jsx",
-        "frontend/src/app.ts",
-        "frontend/src/app.js",
-    ]
-    for candidate in candidates:
-        if (repo / candidate).exists():
-            return candidate
-    return None
-
-
-def _discover_unit_test_targets(repo_path: str) -> list[str]:
-    """Find source files that should receive generated unit tests."""
-    repo = Path(repo_path)
-    py_targets = sorted(
-        str(path.relative_to(repo))
-        for path in repo.rglob("*.py")
-        if not {".git", "__pycache__", ".venv", "venv", "node_modules"}.intersection(path.parts)
-        and "tests" not in path.parts
-        and not path.name.endswith("_test.py")
-        and path.name != "__init__.py"
-    )
-
-    targets: list[str] = py_targets
-    frontend_entrypoint = _discover_frontend_entrypoint(repo_path)
-    if frontend_entrypoint:
-        targets.append(frontend_entrypoint)
-    return targets
-
 
 def _extract_generated_artifact(repo_path: str, generator_output: str) -> GeneratedArtifact | None:
     """Extract generated file path from a generator message."""
@@ -190,13 +152,14 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 2: INSPECTOR/ANALYZER AGENT", "=" * 70])
     logger.info("Orchestration: starting analyzer agent")
-    results.append(await analyze_codebase(repo_path=repo_path, file_pattern="*.py"))
+    analysis_result = await analyze_codebase(repo_path=repo_path, file_pattern="*.py")
+    results.append(analysis_result)
 
     results.extend(["\n" + "=" * 70, "👤 AGENT 3: TEST GENERATOR AGENT", "=" * 70])
     logger.info("Orchestration: starting generator agent")
     generated_count = 0
     generated_artifacts: list[GeneratedArtifact] = []
-    unit_test_targets = _discover_unit_test_targets(repo_path)
+    unit_test_targets = analyzer_agent_discover_unit_test_targets(Path(repo_path))
     if not unit_test_targets:
         results.append("⚠️ No source targets discovered for unit test generation")
 

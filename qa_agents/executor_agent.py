@@ -13,6 +13,37 @@ from .utils import verify_path_exists
 logger = logging.getLogger("qa-council-server.executor-agent")
 
 
+def _extract_pytest_summary(combined_output: str) -> tuple[int, int, int, bool]:
+    """Parse pytest text output into pass/fail/skip totals and collection status."""
+    summary_match = re.search(
+        r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",
+        combined_output,
+    )
+    passed = int(summary_match.group(1) or 0) if summary_match else combined_output.count(" passed")
+    failed = int(summary_match.group(2) or 0) if summary_match else combined_output.count(" failed")
+    skipped = int(summary_match.group(3) or 0) if summary_match else combined_output.count(" skipped")
+    no_tests_collected = "no tests ran" in combined_output.lower() or "collected 0 items" in combined_output.lower()
+    return passed, failed, skipped, no_tests_collected
+
+
+def _run_coverage_fallback(repo_path: str, test_path: str, coverage_file: Path) -> tuple[str, str, str]:
+    """Run tests with coverage.py directly when pytest-cov plugin is unavailable."""
+    cov_run_cmd = ["coverage", "run", "-m", "pytest", "-v", "--tb=short", test_path or repo_path]
+    cov_xml_cmd = ["coverage", "xml", "-o", str(coverage_file)]
+    cov_report_cmd = ["coverage", "report"]
+
+    run_result = subprocess.run(cov_run_cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
+    xml_result = subprocess.run(cov_xml_cmd, cwd=repo_path, capture_output=True, text=True, timeout=120)
+    report_result = subprocess.run(cov_report_cmd, cwd=repo_path, capture_output=True, text=True, timeout=120)
+    coverage_text = f"{report_result.stdout}\n{xml_result.stderr}".strip()
+
+    return (
+        f"{run_result.stdout}\n{run_result.stderr}".strip(),
+        str(coverage_file) if xml_result.returncode == 0 else "N/A (coverage xml generation failed)",
+        coverage_text,
+    )
+
+
 def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> tuple[bool, dict]:
     """Run pytest and collect key report paths for downstream agent summaries."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -45,12 +76,25 @@ def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test
             )
             fallback_result = subprocess.run(fallback_cmd, cwd=repo_path, capture_output=True, text=True, timeout=300)
             logger.info("Fallback pytest finished with exit code %s", fallback_result.returncode)
+
+            coverage_output, coverage_path, coverage_report_text = "", "N/A (pytest-cov plugin unavailable)", ""
+            try:
+                coverage_output, coverage_path, coverage_report_text = _run_coverage_fallback(
+                    repo_path,
+                    test_path,
+                    coverage_file,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError) as coverage_error:
+                logger.warning("Coverage fallback unavailable: %s", coverage_error)
+
             return True, {
                 "exit_code": fallback_result.returncode,
                 "stdout": fallback_result.stdout,
                 "stderr": fallback_result.stderr,
                 "report_file": "N/A (pytest-html plugin unavailable)",
-                "coverage_file": "N/A (pytest-cov plugin unavailable)",
+                "coverage_file": coverage_path,
+                "coverage_output": coverage_report_text,
+                "fallback_stdout": coverage_output,
                 "used_fallback": True,
             }
 
@@ -89,16 +133,10 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
     stderr = result.get("stderr", "")
     combined_output = f"{stdout}\n{stderr}".strip()
 
-    summary_match = re.search(
-        r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",
-        combined_output,
-    )
-    passed = int(summary_match.group(1) or 0) if summary_match else combined_output.count(" passed")
-    failed = int(summary_match.group(2) or 0) if summary_match else combined_output.count(" failed")
-    skipped = int(summary_match.group(3) or 0) if summary_match else combined_output.count(" skipped")
-    no_tests_collected = "no tests ran" in combined_output.lower() or "collected 0 items" in combined_output.lower()
+    passed, failed, skipped, no_tests_collected = _extract_pytest_summary(combined_output)
 
-    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", combined_output)
+    coverage_source = f"{combined_output}\n{result.get('coverage_output', '')}".strip()
+    coverage_match = re.search(r"TOTAL\s+\d+\s+\d+\s+(\d+)%", coverage_source)
     coverage_pct = coverage_match.group(1) if coverage_match else "N/A"
 
     exit_code = result.get("exit_code", 1)
