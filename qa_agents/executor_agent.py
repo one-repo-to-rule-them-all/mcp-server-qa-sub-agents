@@ -5,12 +5,56 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from .utils import verify_path_exists
 
 logger = logging.getLogger("qa-council-server.executor-agent")
+
+
+@dataclass
+class ExecutionResult:
+    """Structured test execution results for downstream agents."""
+
+    raw_output: str = ""
+    passed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    coverage_pct: str = "N/A"
+    exit_code: int = 1
+    no_tests_collected: bool = False
+    report_file: str = ""
+    coverage_file: str = ""
+    used_fallback: bool = False
+    error: str = ""
+
+    def to_display_string(self) -> str:
+        """Human-readable formatted output."""
+        if self.error:
+            return f"❌ Test execution error: {self.error}"
+
+        status = "✅" if self.exit_code == 0 and not self.no_tests_collected else "❌" if self.exit_code != 0 else "⚠️"
+        fallback_note = "\n⚠️ Fallback mode used (pytest-html/pytest-cov options unavailable).\n" if self.used_fallback else ""
+
+        collection_line = ""
+        if self.no_tests_collected:
+            collection_line = "\n- ⚠️ No tests were collected"
+
+        return f"""{status} Test Execution Complete
+
+📊 Results:
+- Passed: {self.passed}
+- Failed: {self.failed}
+- Skipped: {self.skipped}
+- Coverage: {self.coverage_pct}%{collection_line}
+
+📄 Report: {self.report_file}
+📈 Coverage: {self.coverage_file}
+{fallback_note}
+
+{self.raw_output[:2000]}"""
 
 
 def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> tuple[bool, dict]:
@@ -68,27 +112,8 @@ def _run_pytest(repo_path: str, test_results_dir: Path, coverage_dir: Path, test
         return False, {"error": "Test execution timed out"}
 
 
-async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> str:
-    """Execute pytest tests with coverage reporting."""
-    logger.info("Starting test execution: repo_path=%s, test_path=%s", repo_path, test_path or "<all>")
-
-    if not repo_path.strip():
-        logger.warning("Test execution aborted: repository path was empty")
-        return "❌ Error: Repository path is required"
-
-    path_exists, verified_path = verify_path_exists(repo_path)
-    if not path_exists:
-        logger.warning("Test execution aborted: invalid repository path (%s)", verified_path)
-        return f"❌ Error: {verified_path}"
-
-    success, result = _run_pytest(verified_path, test_results_dir, coverage_dir, test_path)
-    if not success:
-        return f"❌ Test execution error: {result.get('error', 'Unknown error')}"
-
-    stdout = result.get("stdout", "")
-    stderr = result.get("stderr", "")
-    combined_output = f"{stdout}\n{stderr}".strip()
-
+def _parse_pytest_output(combined_output: str, result: dict) -> ExecutionResult:
+    """Parse pytest output and return structured results."""
     summary_match = re.search(
         r"=+\s*(?:(\d+) passed)?(?:,\s*)?(?:(\d+) failed)?(?:,\s*)?(?:(\d+) skipped)?(?:,\s*)?in\s",
         combined_output,
@@ -106,30 +131,58 @@ async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Pa
     if exit_code != 0 and failed == 0 and has_pytest_errors:
         failed = 1
 
-    logger.info(
-        "Execution summary: passed=%d failed=%d skipped=%d coverage=%s no_tests=%s exit_code=%s",
-        passed,
-        failed,
-        skipped,
-        coverage_pct,
-        no_tests_collected,
-        exit_code,
+    return ExecutionResult(
+        raw_output=combined_output,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        coverage_pct=coverage_pct,
+        exit_code=exit_code,
+        no_tests_collected=no_tests_collected,
+        report_file=result.get("report_file", ""),
+        coverage_file=result.get("coverage_file", ""),
+        used_fallback=result.get("used_fallback", False),
     )
 
-    status = "✅" if exit_code == 0 and not no_tests_collected else "❌" if exit_code != 0 else "⚠️"
-    fallback_note = "\n⚠️ Fallback mode used (pytest-html/pytest-cov options unavailable).\n" if result.get("used_fallback") else ""
-    return f"""{status} Test Execution Complete
 
-📊 Results:
-- Passed: {passed}
-- Failed: {failed}
-- Skipped: {skipped}
-- Coverage: {coverage_pct}%
-- No tests collected: {no_tests_collected}
+async def execute_tests_structured(
+    repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = ""
+) -> ExecutionResult:
+    """Execute pytest and return structured results for downstream agents."""
+    logger.info("Starting test execution: repo_path=%s, test_path=%s", repo_path, test_path or "<all>")
 
-📄 Report: {result.get('report_file')}
-📈 Coverage: {result.get('coverage_file')}
-{fallback_note}
+    if not repo_path.strip():
+        logger.warning("Test execution aborted: repository path was empty")
+        return ExecutionResult(error="Repository path is required")
 
-{combined_output[:2000]}
-"""
+    path_exists, verified_path = verify_path_exists(repo_path)
+    if not path_exists:
+        logger.warning("Test execution aborted: invalid repository path (%s)", verified_path)
+        return ExecutionResult(error=verified_path)
+
+    success, result = _run_pytest(verified_path, test_results_dir, coverage_dir, test_path)
+    if not success:
+        return ExecutionResult(error=result.get("error", "Unknown error"))
+
+    stdout = result.get("stdout", "")
+    stderr = result.get("stderr", "")
+    combined_output = f"{stdout}\n{stderr}".strip()
+
+    execution_result = _parse_pytest_output(combined_output, result)
+
+    logger.info(
+        "Execution summary: passed=%d failed=%d skipped=%d coverage=%s exit_code=%s",
+        execution_result.passed,
+        execution_result.failed,
+        execution_result.skipped,
+        execution_result.coverage_pct,
+        execution_result.exit_code,
+    )
+
+    return execution_result
+
+
+async def execute_tests(repo_path: str, test_results_dir: Path, coverage_dir: Path, test_path: str = "") -> str:
+    """Execute pytest tests with coverage reporting."""
+    result = await execute_tests_structured(repo_path, test_results_dir, coverage_dir, test_path)
+    return result.to_display_string()

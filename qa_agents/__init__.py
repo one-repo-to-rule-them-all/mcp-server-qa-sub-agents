@@ -1,17 +1,21 @@
 """Agent modules for the QA Council MCP server."""
 
-from .analyzer_agent import analyze_codebase
+from .analyzer_agent import AnalysisResult, analyze_codebase, analyze_codebase_structured
 from .cicd_agent import generate_github_workflow
-from .executor_agent import execute_tests
+from .executor_agent import ExecutionResult, execute_tests, execute_tests_structured
 from .generator_agent import generate_e2e_tests, generate_unit_tests
 from .github_pr_agent import create_test_fix_pr
 from .repair_agent import repair_failing_tests
 from .repository_agent import clone_repository
 
 __all__ = [
+    "AnalysisResult",
+    "ExecutionResult",
     "analyze_codebase",
+    "analyze_codebase_structured",
     "clone_repository",
     "execute_tests",
+    "execute_tests_structured",
     "generate_e2e_tests",
     "generate_github_workflow",
     "generate_unit_tests",

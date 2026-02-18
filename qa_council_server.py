@@ -13,8 +13,10 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from qa_agents.analyzer_agent import analyze_codebase as analyzer_agent_analyze_codebase
+from qa_agents.analyzer_agent import analyze_codebase_structured
 from qa_agents.cicd_agent import generate_github_workflow as cicd_agent_generate_github_workflow
 from qa_agents.executor_agent import execute_tests as executor_agent_execute_tests
+from qa_agents.executor_agent import execute_tests_structured
 from qa_agents.generator_agent import generate_e2e_tests as generator_agent_generate_e2e_tests
 from qa_agents.generator_agent import generate_unit_tests as generator_agent_generate_unit_tests
 from qa_agents.github_pr_agent import create_test_fix_pr as github_agent_create_test_fix_pr
@@ -42,44 +44,6 @@ class GeneratedArtifact:
 
     relative_path: str
     description: str
-
-
-def _discover_frontend_entrypoint(repo_path: str) -> str | None:
-    """Return the first matching frontend app entrypoint if present."""
-    repo = Path(repo_path)
-    candidates = [
-        "frontend/src/App.tsx",
-        "frontend/src/App.jsx",
-        "frontend/src/App.ts",
-        "frontend/src/App.js",
-        "frontend/src/app.tsx",
-        "frontend/src/app.jsx",
-        "frontend/src/app.ts",
-        "frontend/src/app.js",
-    ]
-    for candidate in candidates:
-        if (repo / candidate).exists():
-            return candidate
-    return None
-
-
-def _discover_unit_test_targets(repo_path: str) -> list[str]:
-    """Find source files that should receive generated unit tests."""
-    repo = Path(repo_path)
-    py_targets = sorted(
-        str(path.relative_to(repo))
-        for path in repo.rglob("*.py")
-        if not {".git", "__pycache__", ".venv", "venv", "node_modules"}.intersection(path.parts)
-        and "tests" not in path.parts
-        and not path.name.endswith("_test.py")
-        and path.name != "__init__.py"
-    )
-
-    targets: list[str] = py_targets
-    frontend_entrypoint = _discover_frontend_entrypoint(repo_path)
-    if frontend_entrypoint:
-        targets.append(frontend_entrypoint)
-    return targets
 
 
 def _extract_generated_artifact(repo_path: str, generator_output: str) -> GeneratedArtifact | None:
@@ -110,7 +74,7 @@ async def clone_repository(repo_url: str = "", branch: str = "main") -> str:
 
 @mcp.tool()
 async def analyze_codebase(repo_path: str = "", file_pattern: str = "*.py") -> str:
-    """Analyze Python codebase structure and identify testable components."""
+    """Analyze codebase structure and identify testable components (Python and frontend)."""
     logger.info("Analyzer Agent: analyzing %s", repo_path)
     return await analyzer_agent_analyze_codebase(repo_path, file_pattern)
 
@@ -188,15 +152,18 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
 
     repo_path = clone_result.split(": ", 1)[1] if ": " in clone_result else ""
 
+    # --- Agent 2: Analyzer (single source of truth for file discovery) ---
     results.extend(["\n" + "=" * 70, "👤 AGENT 2: INSPECTOR/ANALYZER AGENT", "=" * 70])
     logger.info("Orchestration: starting analyzer agent")
-    results.append(await analyze_codebase(repo_path=repo_path, file_pattern="*.py"))
+    analysis = await analyze_codebase_structured(repo_path, file_pattern="*.py")
+    results.append(analysis.to_display_string() if not analysis.error else analysis.error)
 
+    # --- Agent 3: Generator (uses analyzer output for targets) ---
     results.extend(["\n" + "=" * 70, "👤 AGENT 3: TEST GENERATOR AGENT", "=" * 70])
     logger.info("Orchestration: starting generator agent")
     generated_count = 0
     generated_artifacts: list[GeneratedArtifact] = []
-    unit_test_targets = _discover_unit_test_targets(repo_path)
+    unit_test_targets = analysis.all_targets
     if not unit_test_targets:
         results.append("⚠️ No source targets discovered for unit test generation")
 
@@ -219,18 +186,23 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
             if artifact:
                 generated_artifacts.append(artifact)
 
+    # --- Agent 4: Executor (returns structured results) ---
     results.extend(["\n" + "=" * 70, "👤 AGENT 4: EXECUTOR AGENT", "=" * 70])
     logger.info("Orchestration: starting executor agent")
-    exec_result = await execute_tests(repo_path=repo_path)
-    results.append(exec_result)
+    exec_structured = await execute_tests_structured(repo_path, TEST_RESULTS_DIR, COVERAGE_DIR)
+    exec_display = exec_structured.to_display_string()
+    results.append(exec_display)
 
-    if "failed" in exec_result.lower() or "❌" in exec_result:
+    # --- Agent 5: Repairer (receives raw pytest output, not formatted display) ---
+    has_failures = exec_structured.failed > 0 or exec_structured.exit_code != 0
+    if has_failures:
         results.extend(["\n" + "=" * 70, "👤 AGENT 5: REPAIRER AGENT", "=" * 70])
         logger.info("Orchestration: starting repair agent due to failures")
-        results.append(await repair_failing_tests(repo_path=repo_path, test_output=exec_result))
+        results.append(await repair_failing_tests(repo_path=repo_path, test_output=exec_structured.raw_output))
     else:
         results.append("\n⏭️  Agent 5 (Repairer) skipped - no failures detected")
 
+    # --- Agent 6: CI/CD ---
     results.extend(["\n" + "=" * 70, "👤 AGENT 6: CI/CD AGENT", "=" * 70])
     logger.info("Orchestration: starting CI/CD agent")
     workflow_result = await generate_github_workflow(repo_path=repo_path, test_command="pytest --cov=backend --cov-report=xml -v")
@@ -240,6 +212,7 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
     if workflow_artifact:
         generated_artifacts.append(workflow_artifact)
 
+    # --- Agent 7: GitHub PR ---
     if generated_artifacts:
         results.extend(["\n" + "=" * 70, "👤 AGENT 7: GITHUB PR AGENT", "=" * 70])
         logger.info("Orchestration: starting github PR agent")
@@ -253,7 +226,7 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
                     "description": artifact.description,
                 }
             )
-        pr_result = await create_test_fix_pr(repo_url=repo_url, test_output=exec_result, fixes=json.dumps(fixes))
+        pr_result = await create_test_fix_pr(repo_url=repo_url, test_output=exec_display, fixes=json.dumps(fixes))
         results.append(pr_result)
     else:
         results.append("\n⏭️  Agent 7 (GitHub PR) skipped - no generated artifacts available")
@@ -269,7 +242,7 @@ async def orchestrate_full_qa_cycle(repo_url: str = "", branch: str = "main", ba
   ✅ Inspector Agent - Codebase analyzed
   ✅ Generator Agent - {generated_count} test suites created
   ✅ Executor Agent - Tests executed with coverage
-  {"✅ Repairer Agent - Failures analyzed" if "failed" in exec_result.lower() else "⏭️  Repairer Agent - Skipped (no failures)"}
+  {"✅ Repairer Agent - Failures analyzed" if has_failures else "⏭️  Repairer Agent - Skipped (no failures)"}
   ✅ CI/CD Agent - GitHub Actions workflow generated
   {"✅ GitHub PR Agent - Test PR created" if generated_artifacts else "⏭️  GitHub PR Agent - Skipped (no generated artifacts)"}
 """,
