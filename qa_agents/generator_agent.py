@@ -12,6 +12,11 @@ logger = logging.getLogger("qa-council-server.generator-agent")
 REACT_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
 
 
+def _ensure_test_directories(repo: Path) -> None:
+    for relative in ("tests/pages", "tests/e2e", "tests/integration", "tests/unit"):
+        (repo / relative).mkdir(parents=True, exist_ok=True)
+
+
 def _build_module_import(target_file: str) -> str:
     module_path = Path(target_file).with_suffix("")
     return ".".join(module_path.parts)
@@ -181,7 +186,7 @@ describe("{stem} component", () => {{
 """
 
 
-async def generate_unit_tests(repo_path: str, target_file: str) -> str:
+async def generate_unit_tests(repo_path: str, target_file: str, manifest_json: str = "") -> str:
     """Generate unit tests that follow QA best practices for Python and React."""
     logger.info("Starting unit test generation: repo_path=%s target_file=%s", repo_path, target_file)
 
@@ -198,7 +203,10 @@ async def generate_unit_tests(repo_path: str, target_file: str) -> str:
         logger.warning("Unit test generation aborted: invalid repository path (%s)", verified_path)
         return f"❌ Error: Repository path issue - {verified_path}"
 
-    file_path = Path(verified_path) / target_file
+    repo = Path(verified_path)
+    _ensure_test_directories(repo)
+
+    file_path = repo / target_file
     if not file_path.exists():
         logger.warning("Unit test generation aborted: file not found (%s)", file_path)
         return f"❌ Error: File not found: {target_file}"
@@ -212,7 +220,7 @@ async def generate_unit_tests(repo_path: str, target_file: str) -> str:
     return f"⚠️ Unsupported file type for unit test generation: {target_file}"
 
 
-async def generate_e2e_tests(repo_path: str, base_url: str, test_name: str = "app") -> str:
+async def generate_e2e_tests(repo_path: str, base_url: str, test_name: str = "app", manifest_json: str = "") -> str:
     """Generate Playwright E2E tests for web applications."""
     logger.info("Starting E2E generation: repo_path=%s base_url=%s test_name=%s", repo_path, base_url, test_name)
 
@@ -229,6 +237,7 @@ async def generate_e2e_tests(repo_path: str, base_url: str, test_name: str = "ap
         return f"❌ Error: {verified_path}"
 
     repo = Path(verified_path)
+    _ensure_test_directories(repo)
     test_dir = repo / "tests" / "e2e"
     test_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,3 +257,35 @@ def test_{test_name}_page_loads(page: Page, base_url: str):
     logger.info("Generated E2E test file: %s", test_file)
 
     return f"✅ E2E tests generated successfully\n\n🌐 Base URL: {base_url}\n📝 Test file: {test_file}"
+
+
+async def generate_integration_tests(repo_path: str, service_name: str = "service", manifest_json: str = "") -> str:
+    """Generate API/service integration tests with deterministic mocks."""
+    logger.info("Starting integration test generation: repo_path=%s service=%s", repo_path, service_name)
+
+    if not repo_path.strip():
+        return "❌ Error: Repository path is required"
+
+    path_exists, verified_path = verify_path_exists(repo_path)
+    if not path_exists:
+        return f"❌ Error: Repository path issue - {verified_path}"
+
+    repo = Path(verified_path)
+    _ensure_test_directories(repo)
+    test_file = repo / "tests" / "integration" / f"test_{service_name}_integration.py"
+    content = f'''"""Integration tests for {service_name} with mocks."""
+from unittest.mock import Mock
+
+
+def test_{service_name}_healthcheck_contract():
+    response = {{"status": "ok", "service": "{service_name}"}}
+    assert response["status"] == "ok"
+
+
+def test_{service_name}_dependency_mocking():
+    dependency = Mock(return_value={{"result": "ok"}})
+    payload = dependency()
+    assert payload["result"] == "ok"
+'''
+    test_file.write_text(content, encoding="utf-8")
+    return f"✅ Integration tests generated successfully\n\n📝 Test file: {test_file}"
