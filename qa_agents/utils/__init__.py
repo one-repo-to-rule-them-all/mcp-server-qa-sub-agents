@@ -8,6 +8,7 @@ from .git_utils import (
     parse_github_repo_identifier,
     sanitize_repo_name,
 )
+from .logging_utils import configure_json_logging
 from .path_utils import verify_path_exists
 
 __all__ = [
@@ -18,5 +19,6 @@ __all__ = [
     "get_repo_identifier_from_local_repo",
     "parse_github_repo_identifier",
     "sanitize_repo_name",
+    "configure_json_logging",
     "verify_path_exists",
 ]

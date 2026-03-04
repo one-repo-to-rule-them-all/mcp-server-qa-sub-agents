@@ -6,8 +6,8 @@ A production-ready autonomous QA testing system implementing a "Council of Agent
 
 ### Key Capabilities
 
-- **Multi-Agent Architecture**: 6 specialized agents working in concert
-- **Full Lifecycle Automation**: Clone → Analyze → Generate → Execute → Repair → Deploy
+- **Multi-Agent Architecture**: 7 specialized agents working in concert with a shared AuditTrail schema
+- **Full Lifecycle Automation**: Clone → Inspect → Analyze → Generate → Execute → Heal → Scribe
 - **GitHub Integration**: Automatic PR creation with fix recommendations
 - **Coverage Analysis**: Comprehensive test coverage reporting
 - **CI/CD Ready**: GitHub Actions workflows included
@@ -48,16 +48,17 @@ A production-ready autonomous QA testing system implementing a "Council of Agent
  [pytest/PW]     [Fix Analysis]   [GH Actions]
 ```
 
-### Agent Responsibilities
+### Agent Responsibilities (Council of 7)
 
 | Agent | Purpose | Input | Output | Tools Used |
 |-------|---------|-------|--------|------------|
-| **Repository** | Source code management | Repo URL | Cloned code | Git |
-| **Inspector** | Code analysis | File paths | Component list | AST, os.walk |
-| **Generator** | Test creation | Components | Test files | Templates |
-| **Executor** | Test execution | Test files | Results + coverage | pytest, Playwright |
-| **Repairer** | Failure analysis | Test output | Fix suggestions | Pattern matching |
-| **CI/CD** | Pipeline generation | Config | Workflow files | YAML generation |
+| **Orchestrator** | Pipeline + AuditTrail persistence | Repo URL | Session context JSON | MCP tools |
+| **Inspector** | Tech stack discovery | File paths | TechStackManifest | Heuristics |
+| **Analyst** | AST-based testable surface map | Source tree | API/UI/logic map | AST parsing |
+| **Generator** | Unit/Integration/E2E/POM generation | Manifest + surfaces | Test files | Templates |
+| **Executor** | Run and collect FailurePayloads | Test files | Results + DOM + JSON traces | pytest/Playwright |
+| **Healer** | Selector/logic repair | FailurePayload | Patched page objects | Fuzzy matching |
+| **Scribe** | Branch/commit/PR/workflow | Artifacts | PR + quality gate | git + GitHub API |
 
 ---
 
@@ -721,3 +722,8 @@ MIT License - See LICENSE file for details
 **Version**: 2.0-fixed  
 **Status**: Production Ready  
 **Last Updated**: February 14, 2026
+
+
+## MCP Tooling Contract
+
+The server now exposes both `list_tools` and `call_tool` to support inter-agent communication and reflective orchestration.
