@@ -1,4 +1,7 @@
-"""CI/CD agent for generating GitHub workflow automation."""
+"""CI/CD agent.
+
+Generates and optionally dispatches GitHub workflow automation for QA runs.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ async def _trigger_github_workflow(
         "Authorization": f"Bearer {github_token}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    # workflow_dispatch payload only requires the target ref.
     payload = {"ref": ref}
 
     try:
